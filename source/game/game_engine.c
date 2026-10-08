@@ -568,7 +568,6 @@ symbols in this file:
 #include "networking/network_game_globals.h"
 #include "networking/network_server_manager.h"
 #include "networking/network_game_manager.h"
-#include "network_coop.h" /* port: port/linux/game/network_coop.c */
 /* (network_server_manager_internal.h's: the host's game record) */
 struct network_game *network_game_server_get_game(struct network_game_server *server);
 #include "objects.h"
@@ -590,7 +589,6 @@ struct network_game *network_game_server_get_game(struct network_game_server *se
 #include "text/unicode.h"
 #include "units/bipeds.h"
 #include "units/units.h"
-#include "custom_edition_cache.h" /* port: port/linux/game/custom_edition_cache.c */
 
 /* network_game_globals.c's */
 boolean network_game_distributed_client(void);
@@ -932,19 +930,11 @@ long game_globals_get_weapon(
 	struct game_globals *game_globals,
 	long weapon_list_index)
 {
-	struct tag_reference *weapon;
-	long weapon_definition_index;
-
-	/* port: none past the end of the list. A Custom Edition map's globals can
-	list fewer weapons than the Xbox's fourteen (stopping before the
-	grenades). */
-	if (weapon_list_index < 0 || weapon_list_index >= game_globals->weapon_list.count)
-		return NONE;
-	weapon = TAG_BLOCK_GET_ELEMENT(
+	struct tag_reference *weapon = TAG_BLOCK_GET_ELEMENT(
 		&game_globals->weapon_list,
 		weapon_list_index,
 		struct tag_reference);
-	weapon_definition_index = weapon->index;
+	long weapon_definition_index = weapon->index;
 
 	return weapon_definition_index;
 }
@@ -1466,11 +1456,6 @@ static void rasterize_in_game_score_draw_line(
 	return;
 }
 
-/* port: the in-game scoreboard's lists (game_engine_rasterize_scoreboard,
-game_engine_rasterize_in_game_score): the players in the game, not those who
-quit, ranked and placed among themselves */
-static boolean statistic_buffer_in_game_only = FALSE;
-
 long populate_statistic_buffer(
 	struct statistic_buffer *statistic_buffer,
 	enum postgame_statistic statistic,
@@ -1489,8 +1474,6 @@ long populate_statistic_buffer(
 			"c:\\halo\\SOURCE\\game\\game_engine.c",
 			0x2C8,
 			player_count < MULTIPLAYER_MAXIMUM_PLAYERS);
-		if (statistic_buffer_in_game_only && player->quit_out_of_game)
-			continue;
 		if (player_count < MULTIPLAYER_MAXIMUM_PLAYERS)
 		{
 			statistic_buffer[player_count].player_index = player_iterator.datum_index;
@@ -1676,27 +1659,6 @@ static long select_players_to_display(
 	return MIN(maximum_count, player_count);
 }
 
-/* port: network co-op's scoreboard list (game_engine_rasterize_scoreboard):
-the players in the game, as they joined */
-static long populate_campaign_player_buffer(
-	struct statistic_buffer *statistic_buffer)
-{
-	struct data_iterator iterator;
-	struct player_datum *player;
-	long player_count = 0;
-
-	data_iterator_new(&iterator, player_data);
-	while ((player = data_iterator_next(&iterator)) != NULL && player_count < MULTIPLAYER_MAXIMUM_PLAYERS)
-	{
-		if (player->quit_out_of_game)
-			continue;
-		csmemset(&statistic_buffer[player_count], 0, sizeof(*statistic_buffer));
-		statistic_buffer[player_count++].player_index = iterator.datum_index;
-	}
-
-	return player_count;
-}
-
 /* port: the scoreboard of a full-screen view (game_engine_rasterize_in_game_score;
 a split-screen view's keeps the Xbox's six rows): SCOREBOARD_SCALE times the
 HUD's text, centred, on a panel (display.scoreboard_background). A team game's
@@ -1705,9 +1667,7 @@ order of score in one column, or two when one has too few rows; each with
 the player's ping in a network game (the host's measure:
 network_distributed.c). More players than a page are scrolled to with the
 mouse wheel and Page Up/Down (platform_scoreboard_scroll), a footer telling
-which are shown; opened, it shows the viewer's own player's page. Network
-co-op's campaign, with no game engine, lists its players as they joined,
-with only their names and pings. */
+which are shown; opened, it shows the viewer's own player's page. */
 enum
 {
 	/* the rows' widths (in the scoreboard's text, before it is scaled):
@@ -1893,7 +1853,6 @@ static void game_engine_rasterize_scoreboard(
 	boolean has_teams = game_engine_has_teams();
 	boolean network = game_connection() == _game_connection_network_client ||
 		game_connection() == _game_connection_network_server;
-	boolean campaign = !game_engine;
 	boolean team_columns;
 	long font_index = hud_get_font_index();
 	long string_list_index;
@@ -1927,16 +1886,7 @@ static void game_engine_rasterize_scoreboard(
 	rows = (long)((bounds.y1 - SCOREBOARD_LAYOUT_TOP_ROWS * line_height) / SCOREBOARD_SCALE / line_height) - 2 -
 		SCOREBOARD_BOTTOM_ROWS;
 	rows = MAX(rows, 1);
-	if (campaign)
-	{
-		ranked_count = populate_campaign_player_buffer(ranked);
-	}
-	else
-	{
-		statistic_buffer_in_game_only = TRUE;
-		ranked_count = populate_statistic_buffer(ranked, _postgame_statistic_ranking, FALSE);
-		statistic_buffer_in_game_only = FALSE;
-	}
+	ranked_count = populate_statistic_buffer(ranked, _postgame_statistic_ranking, FALSE);
 	team_columns = has_teams && scoreboard_team_columns() && width >= 2 * SCOREBOARD_COLUMN_WIDTH + SCOREBOARD_COLUMN_GAP;
 	for (index = 0; index < ranked_count; index++)
 	{
@@ -2027,20 +1977,15 @@ static void game_engine_rasterize_scoreboard(
 	team_colors[1].green = 0.3f;
 	team_colors[1].blue = 0.6f;
 
-	if (campaign)
-		usprintf(title_string, L"Co-op");
-	else
-		game_engine_generate_title_string(title_string, player_index);
+	game_engine_generate_title_string(title_string, player_index);
 	color.alpha = alpha;
 	color.red = color.green = color.blue = 0.7f;
 	scoreboard_draw_row(title_string, FALSE, &color, 0, top, left, FALSE);
 
 	string_list_index = tag_loaded('ustr', "ui\\multiplayer_game_text");
-	column_name = string_list_index != NONE && !campaign ? unicode_string_list_get_string(string_list_index, 0x43) : L"";
+	column_name = string_list_index != NONE ? unicode_string_list_get_string(string_list_index, 0x43) : L"";
 	score_name = string_list_index != NONE ? unicode_string_list_get_string(string_list_index, 0x44) : L"";
-	score_string[0] = 0;
-	if (!campaign)
-		game_engine->format_score_name(score_string);
+	game_engine->format_score_name(score_string);
 	usprintf(row_string, L"\t%s\t%s\t%s\t%s", column_name, score_name, score_string, network ? L"Ping" : L"");
 	{
 		long column;
@@ -2085,16 +2030,13 @@ static void game_engine_rasterize_scoreboard(
 			continue;
 		color = *hud_get_text_color(&text_color);
 		color.alpha = alpha;
-		score_string[0] = 0;
-		status_string = score_string;
-		if (!campaign)
-		{
-			game_engine->format_player_score(entry->player_index, score_string);
-			if (game_engine_player_is_out_of_lives(entry->player_index))
-				status_string = string_list_index != NONE ? unicode_string_list_get_string(string_list_index, 0x8A) : L"";
-			else if (player->quit_out_of_game)
-				status_string = string_list_index != NONE ? unicode_string_list_get_string(string_list_index, 0x8B) : L"";
-		}
+		game_engine->format_player_score(entry->player_index, score_string);
+		if (game_engine_player_is_out_of_lives(entry->player_index))
+			status_string = string_list_index != NONE ? unicode_string_list_get_string(string_list_index, 0x8A) : L"";
+		else if (player->quit_out_of_game)
+			status_string = string_list_index != NONE ? unicode_string_list_get_string(string_list_index, 0x8B) : L"";
+		else
+			status_string = score_string;
 		ping_string[0] = 0;
 		if (network)
 		{
@@ -2111,7 +2053,7 @@ static void game_engine_rasterize_scoreboard(
 		usprintf(
 			row_string,
 			L"\t%s\t%s\t%s\t%s",
-			campaign ? L"" : get_place_string(entry),
+			get_place_string(entry),
 			player->name,
 			status_string,
 			ping_string);
@@ -2160,21 +2102,18 @@ static void game_engine_rasterize_in_game_score(
 	wchar_t *column_name;
 	wchar_t *score_name;
 
-	/* port: a full-screen view's its own, as is the campaign's
-	(game_engine_rasterize_scoreboard) */
-	if (local_player_count() <= 1 || !game_engine)
+	/* port: a full-screen view's its own (game_engine_rasterize_scoreboard) */
+	if (local_player_count() <= 1)
 	{
 		game_engine_rasterize_scoreboard(player_index, alpha);
 		return;
 	}
 	game_engine_generate_title_string(title_string, player_index);
-	statistic_buffer_in_game_only = TRUE;
 	entry_count = select_players_to_display(
 		_postgame_statistic_ranking,
 		player_index,
 		entries,
 		NUMBEROF(entries));
-	statistic_buffer_in_game_only = FALSE;
 
 	color.alpha = alpha;
 	color.red = 0.7f;
@@ -3542,7 +3481,7 @@ static void game_engine_post_rasterize_in_game(
 	match_assert(
 		"c:\\halo\\SOURCE\\game\\game_engine.c",
 		0x771,
-		NULL != game_engine || network_coop_active());
+		NULL != game_engine);
 
 	if (game_engine && player)
 		internal_rasterize_target_name(player_index);
@@ -3551,7 +3490,7 @@ static void game_engine_post_rasterize_in_game(
 	fade = game_engine_globals.hud_message_timers[local_player_index];
 	if ((!gamepad ||
 		!gamepad->buttons[_gamepad_binary_button_back]) &&
-		(!game_engine || game_engine_globals.postgame_state != game_engine_mode_postgame_delay))
+		game_engine_globals.postgame_state != game_engine_mode_postgame_delay)
 	{
 		/* a frame is no longer a tick (render_interpolation.c): fade in half
 		a second, not in 15 frames */
@@ -3771,8 +3710,7 @@ static void game_engine_build_lighting(
 		if (global_variant.game_engine_index == game_engine_race)
 		{
 			struct scenario *scenario = global_scenario_get();
-			/* port: a long counter, for a map's long count */
-			long flag_index;
+			short flag_index;
 
 			for (flag_index = 0;
 				flag_index < scenario->netgame_flags.count;
@@ -3915,12 +3853,6 @@ void game_engine_post_rasterize(
 				!"unreachable");
 			break;
 		}
-	}
-	/* port: network co-op's campaign has the scoreboard too, of names and
-	pings (game_engine_rasterize_scoreboard) */
-	else if (network_coop_active())
-	{
-		game_engine_post_rasterize_in_game();
 	}
 
 	return;
@@ -4189,9 +4121,7 @@ it, back there after the time (the clients get the host's: the distributed
 netcode). Vehicles otherwise stay where they are left (the Xbox game's). */
 enum
 {
-	/* (a map places up to 80 vehicles, a Custom Edition map more: those
-	past this never came back) */
-	MAXIMUM_VEHICLE_HOMES = 1024
+	MAXIMUM_VEHICLE_HOMES = 64
 };
 
 static struct
@@ -4466,9 +4396,6 @@ void game_engine_player_killed(
 	killer (port/linux/game/network_distributed.c) */
 	network_distributed_player_killed(&killing_player_index, &killing_object_index, dead_player_index,
 		&friendly_fire);
-	/* port: a killer who has left the game since is no one's kill */
-	if (killing_player_index != NONE && !player_try_and_get(killing_player_index))
-		killing_player_index = NONE;
 	/* the host's kill of a player who quit, ahead of this client's clock
 	(game_update_quit_players has not come to its time yet) */
 	if (network_game_distributed_client() && dead_player->quit_out_of_game_time != NONE &&
@@ -4944,8 +4871,7 @@ long find_netgame_flags(
 {
 	real radius_squared = radius * radius;
 	long found_count = 0;
-	/* port: a long counter, for a map's long count */
-	long flag_index;
+	short flag_index;
 	struct scenario *scenario;
 
 	scenario = global_scenario_get();
@@ -6694,9 +6620,6 @@ void game_engine_variant_cleanup(
 	variant->universal_variant.respawn_time = MAX(variant->universal_variant.respawn_time, 0);
 	variant->universal_variant.suicide_penalty = MAX(variant->universal_variant.suicide_penalty, 0);
 	variant->universal_variant.lives = MAX(variant->universal_variant.lives, 0);
-	/* port: a NaN passes no comparison, so PIN keeps it */
-	if (!(variant->universal_variant.health == variant->universal_variant.health))
-		variant->universal_variant.health = 1.0f;
 	variant->universal_variant.health = PIN(variant->universal_variant.health, 0.25f, 4.0f);
 	variant->universal_variant.weapon_set = PIN(variant->universal_variant.weapon_set, 0, NUMBER_OF_GAME_ENGINE_WEAPON_SETS - 1);
 	variant->universal_variant.vehicle_set = PIN(variant->universal_variant.vehicle_set, 0, NUMBER_OF_GAME_ENGINE_VEHICLE_SETS - 1);
@@ -6754,10 +6677,6 @@ static void game_engine_predict_resources(
 		0,
 		struct game_globals_multiplayer_information);
 
-	/* port: the cases below take the three multiplayer vehicles the Xbox's
-	globals always have; a Halo Custom Edition map's can have fewer, and then
-	gets no vehicle predicted (port/linux/game/custom_edition_cache.c) */
-	if (multiplayer_information->vehicles.count >= 3)
 	switch (global_variant.universal_variant.vehicle_set)
 	{
 	case _game_engine_vehicles_warthog:
@@ -7105,8 +7024,6 @@ boolean game_engine_vehicle_placement_allowed(
 		return TRUE;
 	side = global_variant.universal_variant.teams ? game_engine_nearest_team(&placement->position) : 0;
 	set = options->vehicle_set[side];
-	if (set == VARIANT_VEHICLE_SET_PC)
-		return TRUE;
 	type = game_engine_variant_vehicle_type(TAG_BLOCK_GET_ELEMENT(palette, placement->palette_entry_index,
 		struct scenario_object_palette_entry)->reference.index);
 	/* (the map's own: the multiplayer ones of the globals, as the Xbox
@@ -7137,31 +7054,16 @@ short game_engine_friendly_damage(
 {
 	struct game_variant_options const *options = game_variant_options_get();
 	struct player_datum *attacker;
-	short friendly_fire;
 
-	/* port: network co-op's friendly fire is Server Setup's FRIENDLY FIRE,
-	in the host's game settings (only the host deals damage), between its
-	players: their AI allies they always hurt, as in the campaign */
-	if (network_coop_active())
+	if (!game_engine || !global_variant.universal_variant.teams || attacker_player_index == NONE ||
+		options->friendly_fire == _friendly_fire_on)
 	{
-		struct network_game *game = network_game_get_game();
-		struct unit_datum *unit = (struct unit_datum *)object_try_and_get_and_verify_type(object_index,
-			_object_mask_unit);
-
-		if (!game || !unit || unit->unit.player_index == NONE)
-			return _friendly_damage_all;
-		friendly_fire = game->variant_options.friendly_fire;
+		return _friendly_damage_all;
 	}
-	else if (!game_engine || !global_variant.universal_variant.teams)
-		return _friendly_damage_all;
-	else
-		friendly_fire = options->friendly_fire;
-	if (attacker_player_index == NONE || friendly_fire == _friendly_fire_on)
-		return _friendly_damage_all;
 	attacker = (struct player_datum *)datum_try_and_get(player_data, attacker_player_index);
 	if (!attacker || attacker->unit_index == object_index)
 		return _friendly_damage_all;
-	switch (friendly_fire)
+	switch (options->friendly_fire)
 	{
 	case _friendly_fire_off: return _friendly_damage_none;
 	case _friendly_fire_shields_only: return _friendly_damage_shields;
@@ -7201,18 +7103,6 @@ long game_engine_remap_vehicle(
 {
 	long result = vehicle_definition_index;
 
-	/* port: a Halo Custom Edition map's vehicles are chosen by their
-	placements, and its scripts may create any
-	(port/linux/game/custom_edition_objects.c) */
-	if (custom_edition_vehicles_by_placement())
-		return result;
-	/* port: and the PC vehicle set's are every one the map places
-	(game_engine_vehicle_placement_allowed) */
-	if (game_engine && (game_variant_options_get()->vehicle_set[0] == VARIANT_VEHICLE_SET_PC ||
-		game_variant_options_get()->vehicle_set[1] == VARIANT_VEHICLE_SET_PC))
-	{
-		return result;
-	}
 	if (game_engine)
 	{
 		struct game_globals *game_globals;
@@ -7478,8 +7368,7 @@ static void netgame_flag_verify_no_team_duplicates(
 	char const *error_message)
 {
 	struct scenario *scenario = global_scenario_get();
-	/* port: long counters, for a map's long count */
-	long flag_index;
+	short flag_index;
 
 	for (flag_index = 0;
 		flag_index < scenario->netgame_flags.count;
@@ -7489,7 +7378,7 @@ static void netgame_flag_verify_no_team_duplicates(
 			&scenario->netgame_flags,
 			flag_index,
 			struct scenario_netgame_flag);
-		long duplicate_index;
+		short duplicate_index;
 
 		if (flag_type != flag->type)
 			continue;
@@ -7615,8 +7504,7 @@ static void netgame_flag_verify_team_range(
 	char const *error_message)
 {
 	struct scenario *scenario = global_scenario_get();
-	/* port: a long counter, for a map's long count */
-	long flag_index;
+	short flag_index;
 
 	for (flag_index = 0;
 		flag_index < scenario->netgame_flags.count;
@@ -7647,8 +7535,7 @@ static void netgame_verify_equipment(
 {
 	long matching_count = 0;
 	struct scenario *scenario = global_scenario_get();
-	/* port: a long counter, for a map's long count */
-	long equipment_index;
+	short equipment_index;
 
 	for (equipment_index = 0;
 		equipment_index < scenario->netgame_equipment.count;
@@ -8345,8 +8232,7 @@ static void game_engine_update_item_spawn(
 	void)
 {
 	struct scenario *scenario = global_scenario_get();
-	/* port: a long counter, for a map's long count */
-	long equipment_index;
+	short equipment_index;
 
 	/* a client of the distributed netcode has the host's items
 	(port/linux/game/network_distributed.c) */
@@ -8395,21 +8281,11 @@ static void game_engine_update_item_spawn(
 				struct object_placement_data placement_data;
 				long object_index;
 
-				/* port: the gametype's no weapons on the map */
-				if (definition_index != NONE && game_variant_options_get()->no_map_weapons &&
-					object_definition_get(definition_index)->object.type == _object_type_weapon)
-				{
-					continue;
-				}
 				object_placement_data_new(
 					&placement_data,
 					definition_index,
 					NONE);
 				placement_data.position = equipment->position;
-				/* port: Halo PC faces a Custom Edition map's items the way
-				their placements do, where the Xbox copied only the position */
-				if (custom_edition_cache_tags_loaded())
-					vector3d_from_angle(&placement_data.forward, equipment->facing);
 				object_index = object_new(&placement_data);
 				if (object_index != NONE)
 				{

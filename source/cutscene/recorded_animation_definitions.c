@@ -99,9 +99,7 @@ short scenario_get_animation_by_name(struct scenario const *scenario, char const
 	short animation_index;
 	short result = NONE;
 
-	/* port: no more than the short counter reaches (a map's count; past it
-	the counter wraps and the loop never ends) */
-	for (animation_index = 0; animation_index < MIN(scenario->recorded_animations.count, SHORT_MAX); animation_index++)
+	for (animation_index = 0; animation_index < scenario->recorded_animations.count; animation_index++)
 	{
 		struct recorded_animation_definition const *animation = TAG_BLOCK_GET_ELEMENT(
 			&scenario->recorded_animations,

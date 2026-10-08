@@ -1189,18 +1189,10 @@ void profile_render_end(
 	return;
 }
 
-/* port: the texture timer is read only by the profile graph and the frame
-dumps; a texture set per draw, it is not timed while nothing reads it */
-#define PROFILE_TEXTURE_TIMED() \
-	(profile_global_enable || profile_graph || profile_dump_frames || profile_dump_lost_frames)
-
 void profile_texture_start(
 	void)
 {
-	if (PROFILE_TEXTURE_TIMED())
-	{
-		profile_timesection_begin_now(&profile_globals.current_frame.texture);
-	}
+	profile_timesection_begin_now(&profile_globals.current_frame.texture);
 
 	return;
 }
@@ -1208,10 +1200,7 @@ void profile_texture_start(
 void profile_texture_end(
 	void)
 {
-	if (PROFILE_TEXTURE_TIMED())
-	{
-		profile_timesection_end_now(&profile_globals.current_frame.texture);
-	}
+	profile_timesection_end_now(&profile_globals.current_frame.texture);
 
 	return;
 }

@@ -33,7 +33,6 @@ symbols in this file:
 #include "items/weapons.h"
 #include "objects/damage.h"
 #include "units.h"
-#include "network_coop.h" /* port: port/linux/game/network_coop.c */
 
 /* ---------- constants */
 
@@ -47,10 +46,6 @@ void unit_scripting_set_current_vitality(
 	long unit_index,
 	real body_vitality,
 	real shield_vitality);
-void unit_scripting_set_current_vitality_of(
-	long unit_index,
-	real body_vitality,
-	real shield_vitality);
 
 /* ---------- globals */
 
@@ -61,9 +56,6 @@ void unit_scripting_set_maximum_vitality(
 	real body_vitality,
 	real shield_vitality)
 {
-	/* port: in network co-op, a player's is every player's */
-	if (unit_index != NONE && network_coop_set_players_vitality(unit_index, TRUE, body_vitality, shield_vitality))
-		return;
 	if (unit_index != NONE)
 	{
 		struct object_datum const *object;
@@ -91,17 +83,6 @@ void units_scripting_set_maximum_vitality(
 }
 
 void unit_scripting_set_current_vitality(
-	long unit_index,
-	real body_vitality,
-	real shield_vitality)
-{
-	/* port: in network co-op, a player's is every player's */
-	if (unit_index != NONE && !network_coop_set_players_vitality(unit_index, FALSE, body_vitality, shield_vitality))
-		unit_scripting_set_current_vitality_of(unit_index, body_vitality, shield_vitality);
-}
-
-/* port: the set itself, for one unit (network_coop.c sets every player's) */
-void unit_scripting_set_current_vitality_of(
 	long unit_index,
 	real body_vitality,
 	real shield_vitality)

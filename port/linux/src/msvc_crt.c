@@ -351,6 +351,32 @@ unsigned int _clearfp(void)
 	__builtin_arm_wsr64("fpsr", __builtin_arm_rsr64("fpsr") & ~0x9fULL);
 	return status;
 }
+#elif defined(__wasm__)
+/* WebAssembly (port/wasm/README.md): rounding is always to nearest and
+there are no exception flags, so the control word is only remembered */
+static unsigned int msvc_control_word = CW_DEFAULT;
+
+unsigned int _control87(unsigned int new_value, unsigned int mask)
+{
+	msvc_control_word = (msvc_control_word & ~mask) | (new_value & mask);
+	return msvc_control_word;
+}
+
+unsigned int _controlfp(unsigned int new_value, unsigned int mask)
+{
+	/* _controlfp ignores the denormal mask */
+	return _control87(new_value, mask & ~_EM_DENORMAL);
+}
+
+unsigned int _statusfp(void)
+{
+	return 0;
+}
+
+unsigned int _clearfp(void)
+{
+	return 0;
+}
 #else
 /* x87: glibc's floating-point environment holds the control and status
 words (fegetenv and fesetenv save and load the whole x87 environment, and

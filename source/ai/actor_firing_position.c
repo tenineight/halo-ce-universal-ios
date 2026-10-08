@@ -1790,8 +1790,7 @@ short actor_select_firing_position(
 		ai_profile.meters[_ai_meter_firing_point].accumulator++;
 
 		encounter_build_firing_position_owner_actor_indices(actor->meta.encounter_index, owner_actor_indices);
-		/* port: a position the array holds (not NONE, nor past the array) */
-		if (VALID_INDEX(actor->firing_positions.current_position_index, (short)NUMBEROF(owner_actor_indices)))
+		if (actor->firing_positions.current_position_index!=NONE)
 		{
 			owner_actor_indices[actor->firing_positions.current_position_index]= NONE;
 		}
@@ -2067,12 +2066,7 @@ short actor_select_firing_position(
 			boolean too_many_firing_positions= FALSE;
 			short index;
 
-			/* port: no more positions than owner_actor_indices and the debug
-			records hold (the map's count; encounter_new cuts the tag to it) */
-			for (index= 0;
-				index<encounter->firing_positions.count &&
-					index<MAXIMUM_NUMBER_OF_FIRING_POSITIONS_PER_ENCOUNTER;
-				index++)
+			for (index= 0; index<encounter->firing_positions.count; index++)
 			{
 				struct firing_position_definition *firing_position_definition= TAG_BLOCK_GET_ELEMENT(
 					&encounter->firing_positions,

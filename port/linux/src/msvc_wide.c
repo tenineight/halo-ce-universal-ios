@@ -978,6 +978,11 @@ int msvc_wremove(const wchar_t *path)
 	return halo_linux_remove(narrow_path);
 }
 
+/* (WASI has no tmpnam, nor its L_tmpnam) */
+#ifndef L_tmpnam
+#define L_tmpnam 20
+#endif
+
 wchar_t *msvc_wtmpnam(wchar_t *string)
 {
 	static wchar_t buffer[L_tmpnam];

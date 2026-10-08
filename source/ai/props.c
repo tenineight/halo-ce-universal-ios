@@ -95,8 +95,7 @@ static long last_prop_data_full_warn_time = NONE;
 void props_initialize(
 	void)
 {
-	/* port: the native builds' larger pool (halo_port_capacity.h) */
-	prop_data = game_state_data_new("prop", HALO_PORT_MAXIMUM_PROPS, sizeof(struct prop_datum));
+	prop_data = game_state_data_new("prop", 768, sizeof(struct prop_datum));
 
 	match_assert("c:\\halo\\SOURCE\\ai\\props.c", 0x24, prop_data);
 
@@ -142,7 +141,7 @@ static void prop_add(
 			error(
 				_error_silent,
 				"AI knowledge database (%d entries) is full (warns once every 30 sec)",
-				HALO_PORT_MAXIMUM_PROPS);
+				768);
 			last_prop_data_full_warn_time = game_time;
 		}
 	}

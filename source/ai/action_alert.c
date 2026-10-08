@@ -43,7 +43,6 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries.h"
-#include "cseries/errors.h"
 #include "actions.h"
 #include "math/real_math.h"
 
@@ -251,7 +250,6 @@ static short action_alert_next_position(
 			unsigned long unavailable_positions[BIT_VECTOR_SIZE_IN_LONGS(32)];
 			boolean any_position_available = FALSE;
 			short position_index;
-			short move_position_count;
 
 			csmemset(
 				unavailable_positions,
@@ -259,23 +257,7 @@ static short action_alert_next_position(
 				sizeof(unavailable_positions));
 			position_index = 0;
 			move_positions = &squad->move_positions;
-			/* port: no more positions than unavailable_positions holds (a
-			map's count): the squad moves among its first ones */
-			move_position_count = (short)PIN(move_positions->count, 0, (long)SIZEOF_BITS(unavailable_positions));
-			if (move_position_count < move_positions->count)
-			{
-				static boolean reported = FALSE;
-
-				if (!reported)
-				{
-					error(_error_silent, "squad %s has %ld move positions (only %d are used)",
-						squad->name,
-						move_positions->count,
-						move_position_count);
-					reported = TRUE;
-				}
-			}
-			while (position_index < move_position_count)
+			while (position_index < move_positions->count)
 			{
 				struct move_position_definition *move_position =
 					TAG_BLOCK_GET_ELEMENT(
@@ -338,7 +320,7 @@ static short action_alert_next_position(
 					result = choose_random_array_element(
 						squad->move_positions.address,
 						sizeof(struct move_position_definition),
-						move_position_count,
+						move_positions->count,
 						offsetof(struct move_position_definition, weight),
 						unavailable_positions);
 				}
@@ -347,7 +329,7 @@ static short action_alert_next_position(
 					short next_position_index;
 
 					if (current_position_index < 0 ||
-						current_position_index >= move_position_count)
+						current_position_index >= move_positions->count)
 						next_position_index = 0;
 					else
 						next_position_index = current_position_index;
@@ -364,7 +346,7 @@ static short action_alert_next_position(
 						case _move_position_order_loop_back_and_forth:
 							if (next_position_index == 0)
 								increasing = TRUE;
-							else if (next_position_index == move_position_count - 1)
+							else if (next_position_index == move_positions->count - 1)
 								increasing = FALSE;
 							else if (direction_increasing)
 								increasing = *direction_increasing;
@@ -382,14 +364,14 @@ static short action_alert_next_position(
 						if (increasing)
 						{
 							next_position_index++;
-							if (next_position_index >= move_position_count)
+							if (next_position_index >= move_positions->count)
 								next_position_index = 0;
 						}
 						else
 						{
 							next_position_index--;
 							if (next_position_index < 0)
-								next_position_index = (short)(move_position_count - 1);
+								next_position_index = (short)(move_positions->count - 1);
 						}
 					}
 					while (BIT_VECTOR_TEST_FLAG(unavailable_positions, next_position_index));

@@ -201,7 +201,7 @@ typedef char map_leaf_size_assert[
 
 /* ---------- prototypes */
 
-static boolean node_stack_push(
+static void node_stack_push(
 	long node_index);
 static long node_stack_pop(
 	void);
@@ -835,9 +835,7 @@ boolean leaf_map_closure(
 
 /* ---------- private code */
 
-/* port: FALSE (nothing pushed) if the stack is full: a bsp deeper than it
-holds has no leaf map */
-static boolean node_stack_push(
+static void node_stack_push(
 	long node_index)
 {
 	match_assert(
@@ -845,15 +843,9 @@ static boolean node_stack_push(
 		42,
 		leaf_map_globals.node_stack_count<MAXIMUM_NODE_STACK_COUNT);
 
-	if (leaf_map_globals.node_stack_count >= MAXIMUM_NODE_STACK_COUNT)
-	{
-		leaf_map_globals.error = "the bsp is too deep for a leaf map.";
-		return FALSE;
-	}
-
 	leaf_map_globals.node_stack[leaf_map_globals.node_stack_count++] = node_index;
 
-	return TRUE;
+	return;
 }
 
 static long node_stack_pop(
@@ -1012,10 +1004,7 @@ static void leaf_map_build_leaf_faces(
 	{
 		long child_node_index;
 
-		if (!node_stack_push(child_index != 0 ? node_index : (node_index | LONG_MIN)))
-		{
-			return;
-		}
+		node_stack_push(child_index != 0 ? node_index : (node_index | LONG_MIN));
 
 		child_node_index = node->children[child_index];
 
@@ -1165,10 +1154,7 @@ static void leaf_map_build_portals(
 	{
 		long child_node_index;
 
-		if (!node_stack_push(child_index != 0 ? node_index : (node_index | LONG_MIN)))
-		{
-			return;
-		}
+		node_stack_push(child_index != 0 ? node_index : (node_index | LONG_MIN));
 
 		child_node_index = node->children[child_index];
 

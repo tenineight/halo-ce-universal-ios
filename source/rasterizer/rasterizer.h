@@ -24,10 +24,7 @@ enum
 
 enum
 {
-	/* port: the Xbox pool (0x18000) held a frame of 1024 particles. The
-	native particle pool is larger, and a full co-op Library spends the Xbox
-	pool before the frame is drawn */
-	RASTERIZER_MEMORY_POOL_SIZE = 0x18000 * (HALO_PORT_MAXIMUM_PARTICLES / 1024),
+	RASTERIZER_MEMORY_POOL_SIZE = 0x18000,
 	RASTERIZER_MAXIMUM_TRIANGLES_PER_TRIANGLE_BUFFER = 24576,
 	RASTERIZER_MAXIMUM_DEBUG_PRIMITIVES = 131072,
 	RASTERIZER_MAXIMUM_DEBUG_VERTICES = 393216,
@@ -167,9 +164,7 @@ struct rasterizer_dynamic_screen_geometry_parameters
 	short map1_to_2_blend_function;
 	short framebuffer_blend_function;
 	boolean point_sampled;
-	/* port: the maps' color is weighted by their alpha before the
-	framebuffer blend (Halo PC's HUD overlays, hud_draw.c) */
-	boolean alpha_weighted;
+	byte pad8B;
 };
 
 typedef char verify_rasterizer_dynamic_screen_geometry_parameters_size[

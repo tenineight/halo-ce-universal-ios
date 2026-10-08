@@ -83,7 +83,6 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries/cseries.h"
-#include "cseries/errors.h"
 #include "math/real_math.h"
 #include "bitmaps/bitmaps.h"
 #include "bitmaps/bitmap_group.h"
@@ -104,16 +103,12 @@ symbols in this file:
 #include "render/render.h"
 #include "units/unit_definitions.h"
 #include "units/units.h"
-#include "cache_file_formats.h" /* port: port/linux/game/cache_file_formats.c */
-#include "custom_edition_cache.h"
 
 /* ---------- constants */
 
 enum
 {
 	_hud_dont_scale_offset_bit = 0,
-	/* port: Halo PC's, which the Xbox's tags never set */
-	_hud_use_high_resolution_scale_bit = 2,
 };
 
 /* hud number and meter definitions (no shared header declares these yet;
@@ -213,17 +208,6 @@ enum hud_multitexture_overlay_blend_function
 enum bitmap_group_type
 {
 	_bitmap_group_type_interface_bitmaps = 4,
-};
-
-/* port: Halo PC's bitmap group flag, which the Xbox's tags never set */
-enum
-{
-	_bitmap_group_half_hud_scale_bit = 4,
-};
-
-enum
-{
-	_bitmap_linear_bit = 4,
 };
 
 enum
@@ -423,9 +407,6 @@ static void hud_draw_multitexture_overlay(
 
 /* ---------- globals */
 
-/* port: a hud bitmap's bad sequence or sprite was reported (once) */
-static boolean hud_bad_bitmap_reported = FALSE;
-
 /* ---------- public code */
 
 /* Inspect the guarded caller's frame, not the return site of this helper.
@@ -434,7 +415,7 @@ __attribute__((noinline)) long get_return_eip(
 	void)
 {
 	/* the caller's return address, as [ebp+4] is in the naked original */
-	return (long)(__INTPTR_TYPE__)__builtin_return_address(1);
+	return (long)__builtin_return_address(1);
 }
 
 real hud_globals_get_scale(
@@ -462,8 +443,7 @@ void hud_retrieve_bitmap_and_bounding_rect(
 	{
 		struct bitmap_group *group = bitmap_group_get(bitmap_group_index);
 
-		/* port: and not below the first sequence (the index is the map's) */
-		if (sequence_index>=0 && sequence_index<group->sequences.count)
+		if (sequence_index<group->sequences.count)
 		{
 			struct bitmap_group_sequence *sequence = TAG_BLOCK_GET_ELEMENT(
 				&group->sequences, sequence_index, struct bitmap_group_sequence);
@@ -475,27 +455,11 @@ void hud_retrieve_bitmap_and_bounding_rect(
 			sprite_count = sequence->sprites.count;
 			if (sprite_count)
 			{
-				/* port: a negative sprite count would give a negative sprite.
-				A sprite's bitmap must be one the group has, or the sprite is
-				not drawn. */
-				struct bitmap_group_sprite *sprite = sprite_count>0 ? TAG_BLOCK_GET_ELEMENT(
-					&sequence->sprites, frame_index%sprite_count, struct bitmap_group_sprite) : NULL;
+				struct bitmap_group_sprite *sprite = TAG_BLOCK_GET_ELEMENT(
+					&sequence->sprites, frame_index%sprite_count, struct bitmap_group_sprite);
 
-				if (sprite && sprite->bitmap_index>=0 && sprite->bitmap_index<group->bitmaps.count)
-				{
-					*bitmap = TAG_BLOCK_GET_ELEMENT(
-						&group->bitmaps, sprite->bitmap_index, struct bitmap_data);
-				}
-				else
-				{
-					*bitmap = NULL;
-					if (!hud_bad_bitmap_reported)
-					{
-						hud_bad_bitmap_reported = TRUE;
-						error(_error_silent, "hud bitmap 0x%08lX sequence #%d has a bad sprite (not drawn)",
-							(unsigned long)bitmap_group_index, sequence_index);
-					}
-				}
+				*bitmap = TAG_BLOCK_GET_ELEMENT(
+					&group->bitmaps, sprite->bitmap_index, struct bitmap_data);
 			}
 			else
 			{
@@ -569,32 +533,6 @@ static boolean hud_draw_multitexture_overlay_get_current_weapon_definition(
 	match_assert_stack_frame("c:\\halo\\SOURCE\\interface\\hud_draw.c", 1032);
 
 	return result;
-}
-
-/* port: Halo PC picks an overlay's shader by the value this build turns its
-blend function into (add, multiply, subtract, multiply2x, dot), from
-shaders listed alphabetically (add, dot, multiply, multiply2x, subtract).
-For the maps made around that (Chimera's multitexture_overlay_fix.cpp, by
-SnowyMouse), each function becomes the one Halo PC drew with. */
-static short hud_multitexture_overlay_blend_function(
-	short blend_function)
-{
-	static short const halo_pc_blend_functions[NUMBER_OF_HUD_MULTITEXTURE_OVERLAY_BLEND_FUNCTIONS] =
-	{
-		_hud_multitexture_overlay_blend_function_add,
-		_hud_multitexture_overlay_blend_function_multiply,
-		_hud_multitexture_overlay_blend_function_dot,
-		_hud_multitexture_overlay_blend_function_multiply2x,
-		_hud_multitexture_overlay_blend_function_subtract,
-	};
-
-	if (custom_edition_cache_relies_on(_custom_edition_behaviour_gearbox_multitexture_blend_modes) &&
-		blend_function >= 0 && blend_function < NUMBER_OF_HUD_MULTITEXTURE_OVERLAY_BLEND_FUNCTIONS)
-	{
-		return halo_pc_blend_functions[blend_function];
-	}
-
-	return blend_function;
 }
 
 static void hud_draw_multitexture_overlay(
@@ -701,19 +639,7 @@ static void hud_draw_multitexture_overlay(
 				((parameters.map[map_index]->width-1)&parameters.map[map_index]->width) != 0 ||
 				((parameters.map[map_index]->height-1)&parameters.map[map_index]->height) != 0;
 
-			/* port: on a Halo Custom Edition map, a linear map is sampled in
-			texels, so the 0 to 1 that the element's (not interface) bitmap
-			spans becomes the map's width and height: Halo PC's interface
-			bitmaps are linear at any size, and bigass_v3's dynamic DMR reticle
-			drew as a square. This build's maps keep the Xbox's scale */
-			if (custom_edition_cache_tags_loaded() && TEST_FLAG(parameters.map[map_index]->flags, _bitmap_linear_bit))
-			{
-				parameters.map_texture_scale[map_index].i =
-					(real)parameters.map[map_index]->width;
-				parameters.map_texture_scale[map_index].j =
-					(real)parameters.map[map_index]->height;
-			}
-			else if (!custom_edition_cache_tags_loaded() && non_power_of_two)
+			if (non_power_of_two)
 			{
 				parameters.map_texture_scale[map_index].i =
 					1.0f/(real)parameters.map[map_index]->width;
@@ -740,7 +666,7 @@ static void hud_draw_multitexture_overlay(
 				&parameters.map1_to_2_blend_function
 			};
 
-			switch (hud_multitexture_overlay_blend_function(overlay->map_blending_function[map_index]))
+			switch (overlay->map_blending_function[map_index])
 			{
 			case _hud_multitexture_overlay_blend_function_add:
 				*out_modes[map_index] =
@@ -774,12 +700,6 @@ static void hud_draw_multitexture_overlay(
 				overlay->framebuffer_blend_function;
 		}
 	}
-
-	/* port: Halo PC adds a Custom Edition overlay's color weighted by its
-	alpha, where those overlays keep their shape (bigass_v3's dynamic DMR
-	reticle added its whole square) */
-	parameters.alpha_weighted = custom_edition_cache_tags_loaded() &&
-		parameters.framebuffer_blend_function == _shader_framebuffer_blend_function_add;
 
 	for (function_index = 0;
 		function_index < overlay->functions.count;
@@ -1251,32 +1171,12 @@ void hud_draw_weapon_overlays(
 		if (!TEST_FLAG(item->flags, _hud_overlay_runtime_invalid_bit) &&
 			(item->type & type_flags))
 		{
-			struct bitmap_group_sequence *sequence = NULL;
+			struct bitmap_group_sequence *sequence = TAG_BLOCK_GET_ELEMENT(
+				&bitmap_group_get(overlays->bitmap.index)->sequences,
+				item->sequence_index,
+				struct bitmap_group_sequence);
 			pixel32 color;
 			short frame_index;
-
-			/* port: the item's sequence is the map's. Only one the bitmap has
-			is looked at, and a sequence with no sprites stays on frame 0
-			(it was a divide by zero). The bad sequence itself isn't drawn
-			(hud_retrieve_bitmap_and_bounding_rect). */
-			if (overlays->bitmap.index!=NONE)
-			{
-				struct bitmap_group *group = bitmap_group_get(overlays->bitmap.index);
-
-				if (item->sequence_index>=0 && item->sequence_index<group->sequences.count)
-				{
-					sequence = TAG_BLOCK_GET_ELEMENT(
-						&group->sequences,
-						item->sequence_index,
-						struct bitmap_group_sequence);
-				}
-				else if (!hud_bad_bitmap_reported)
-				{
-					hud_bad_bitmap_reported = TRUE;
-					error(_error_silent, "hud overlay bitmap 0x%08lX has no sequence #%d (not drawn)",
-						(unsigned long)overlays->bitmap.index, item->sequence_index);
-				}
-			}
 
 			if (TEST_FLAG(item->flags, _hud_overlay_flashes_bit) &&
 				TEST_FLAG(draw_flags, _hud_draw_flashing_bit))
@@ -1290,8 +1190,7 @@ void hud_draw_weapon_overlays(
 
 			if (TEST_FLAG(item->flags, _hud_overlay_flashes_bit) &&
 				TEST_FLAG(draw_flags, _hud_draw_flashing_bit) &&
-				item->frame_rate > 0 &&
-				sequence && sequence->sprites.count > 0)
+				item->frame_rate > 0)
 			{
 				frame_index = (short)(((game_time_get() - reference_time) /
 					item->frame_rate / TICKS_PER_SECOND) % sequence->sprites.count);
@@ -1481,10 +1380,8 @@ void hud_draw_static_element(
 			is_interface_bitmap,
 			FALSE);
 
-		/* port: (none on the maps Chimera lists as drawing none) */
 		for (overlay_index = 0;
-			overlay_index < static_element->multitexture_overlays.count &&
-				!custom_edition_cache_relies_on(_custom_edition_behaviour_block_multitexture_overlays);
+			overlay_index < static_element->multitexture_overlays.count;
 			overlay_index++)
 		{
 			struct multitexture_overlay_hud_element_definition const *overlay =
@@ -1693,15 +1590,13 @@ static real_rectangle2d const *get_sprite_clip_rect(
 	{
 		struct bitmap_group *group = bitmap_group_get(bitmap_group_index);
 
-		/* port: no sequence below the first, and no sprite from a negative
-		sprite count or frame (all the map's) */
-		if (sequence_index>=0 && sequence_index<group->sequences.count)
+		if (sequence_index<group->sequences.count)
 		{
 			struct bitmap_group_sequence *sequence = TAG_BLOCK_GET_ELEMENT(
 				&group->sequences, sequence_index, struct bitmap_group_sequence);
 			long sprite_count = sequence->sprites.count;
 
-			if (sprite_count>0 && frame_index>=0)
+			if (sprite_count)
 			{
 				struct bitmap_group_sprite *sprite = TAG_BLOCK_GET_ELEMENT(
 					&sequence->sprites, frame_index%sprite_count, struct bitmap_group_sprite);
@@ -1932,11 +1827,9 @@ void hud_draw_meter(
 
 		meter_parameters.background_color =
 			((UNSIGNED_CHAR_MAX - (meter->empty_color>>24))<<24) | (meter->empty_color&0xFFFFFF);
-		/* port: fade and opacity clamped to [0, 1], as the tools keep them; a
-		Custom Edition map's meter can be outside that, which asserted */
 		meter_parameters.tint_color = real_alpha_intensity_to_pixel32(
-			PIN(meter->fade, 0.0f, 1.0f),
-			PIN(1.0f-meter->opacity, 0.0f, 1.0f));
+			meter->fade,
+			1.0f-meter->opacity);
 		meter_parameters.gradient = 1.0f;
 		meter_parameters.flash_color_is_negative = FALSE;
 		meter_parameters.tint_mode_2 = TRUE;
@@ -1988,11 +1881,6 @@ void hud_draw_numbers(
 			0,
 			0);
 		boolean kilometers = value > 999;
-		/* port: the Xbox's digits are sprites of one bitmap. A Custom Edition
-		map's can be separate bitmaps with no sprites, one per digit; those
-		draw the same, and the one-bitmap asserts below don't apply. */
-		boolean digits_on_one_bitmap = bitmap_group->sequences.count <= 0 ||
-			TAG_BLOCK_GET_ELEMENT(&bitmap_group->sequences, 0, struct bitmap_group_sequence)->sprites.count > 0;
 
 		if (_texture_cache_bitmap_get_hardware_format(source_bitmap, FALSE, TRUE))
 		{
@@ -2003,7 +1891,6 @@ void hud_draw_numbers(
 			real decimal_point_width = (real)(numbers->fractional_digits ?
 				hud_number->decimal_point_width : 0);
 			real scale;
-			real digit_scale;
 			point2d origin;
 			point2d cursor;
 			short digit_index;
@@ -2017,13 +1904,6 @@ void hud_draw_numbers(
 				scale = hud_globals_get_scale(
 					TEST_FLAG(draw_flags, _hud_draw_in_multiplayer_bit));
 			}
-			/* port: Halo PC draws the digits at half their size, spaced as
-			the digits tag says, for a number flagged to use its high
-			resolution scale (its Custom Edition maps' digits are twice the
-			size) or digits whose bitmap has its half HUD scale */
-			digit_scale = TEST_FLAG(numbers->placement.multiplayer_scaling_flags, _hud_use_high_resolution_scale_bit) ||
-				TEST_FLAG(bitmap_group->flags, _bitmap_group_half_hud_scale_bit) ?
-				scale*0.5f : scale;
 
 			if (TEST_FLAG(numbers->number_flags, _hud_number_show_trailing_m_bit))
 			{
@@ -2099,13 +1979,13 @@ void hud_draw_numbers(
 					match_assert(
 						"c:\\halo\\SOURCE\\interface\\hud_draw.c",
 						515,
-						!digits_on_one_bitmap || source_bitmap==number_bitmap);
+						source_bitmap==number_bitmap);
 					hud_draw_bitmap_direct(
 						number_bitmap,
 						absolute_placement->corner,
 						&point,
 						clip,
-						digit_scale,
+						scale,
 						0.0f,
 						color,
 						bitmap_group->type == _bitmap_group_type_interface_bitmaps);
@@ -2140,13 +2020,13 @@ void hud_draw_numbers(
 						match_assert(
 							"c:\\halo\\SOURCE\\interface\\hud_draw.c",
 							539,
-							!digits_on_one_bitmap || source_bitmap==number_bitmap);
+							source_bitmap==number_bitmap);
 						hud_draw_bitmap_direct(
 							number_bitmap,
 							absolute_placement->corner,
 							&point,
 							clip,
-							digit_scale,
+							scale,
 							0.0f,
 							color,
 							bitmap_group->type == _bitmap_group_type_interface_bitmaps);
@@ -2175,13 +2055,13 @@ void hud_draw_numbers(
 						match_assert(
 							"c:\\halo\\SOURCE\\interface\\hud_draw.c",
 							556,
-							!digits_on_one_bitmap || source_bitmap==number_bitmap);
+							source_bitmap==number_bitmap);
 						hud_draw_bitmap_direct(
 							number_bitmap,
 							absolute_placement->corner,
 							&point,
 							clip,
-							digit_scale,
+							scale,
 							0.0f,
 							color,
 							bitmap_group->type == _bitmap_group_type_interface_bitmaps);
@@ -2212,13 +2092,13 @@ void hud_draw_numbers(
 					match_assert(
 						"c:\\halo\\SOURCE\\interface\\hud_draw.c",
 						575,
-						!digits_on_one_bitmap || source_bitmap==number_bitmap);
+						source_bitmap==number_bitmap);
 					hud_draw_bitmap_direct(
 						number_bitmap,
 						absolute_placement->corner,
 						&point,
 						clip,
-						digit_scale,
+						scale,
 						0.0f,
 						color,
 						bitmap_group->type == _bitmap_group_type_interface_bitmaps);
@@ -2245,13 +2125,13 @@ void hud_draw_numbers(
 					match_assert(
 						"c:\\halo\\SOURCE\\interface\\hud_draw.c",
 						595,
-						!digits_on_one_bitmap || source_bitmap==number_bitmap);
+						source_bitmap==number_bitmap);
 					hud_draw_bitmap_direct(
 						number_bitmap,
 						absolute_placement->corner,
 						&point,
 						clip,
-						digit_scale,
+						scale,
 						0.0f,
 						color,
 						bitmap_group->type == _bitmap_group_type_interface_bitmaps);

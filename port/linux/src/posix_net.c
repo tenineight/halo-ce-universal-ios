@@ -20,7 +20,9 @@ with the host ABI.
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#ifndef HALO_IOS
 #include <sys/random.h>
+#endif
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -29,6 +31,84 @@ with the host ABI.
 #include <unistd.h>
 
 #include "posix.h"
+
+#ifdef __APPLE__
+/* The macOS host of the WebAssembly guest (port/macos) compiles these
+helpers too. macOS has neither the socket type flags nor accept4 nor
+getrandom: the flags are applied after the call instead. */
+#define SOCK_CLOEXEC 0x10000000
+#define SOCK_NONBLOCK 0x20000000
+
+static int apple_socket_flags(int descriptor, int flags)
+{
+	if (descriptor >= 0)
+	{
+		if (flags & SOCK_CLOEXEC)
+			fcntl(descriptor, F_SETFD, FD_CLOEXEC);
+		if (flags & SOCK_NONBLOCK)
+			fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK);
+		/* a write to a closed connection fails rather than raising SIGPIPE */
+		setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &(int){ 1 }, sizeof(int));
+	}
+	return descriptor;
+}
+
+static int apple_socket(int family, int type, int protocol)
+{
+	return apple_socket_flags(socket(family, type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK), protocol),
+		type & (SOCK_CLOEXEC | SOCK_NONBLOCK));
+}
+#define socket(family, type, protocol) apple_socket(family, type, protocol)
+
+/* A Winsock sockaddr starts with a 16-bit family, a BSD one with a length
+byte and an 8-bit family: the game's addresses are converted on their way
+in (address_in) and out (address_out) */
+static const void *address_in(const void *address, int length, struct sockaddr_storage *storage)
+{
+	unsigned short family;
+
+	if (!address || length < 2 || length > (int)sizeof(*storage))
+		return address;
+	memcpy(storage, address, (size_t)length);
+	memcpy(&family, address, sizeof(family));
+	storage->ss_len = (unsigned char)length;
+	storage->ss_family = (sa_family_t)family;
+	return storage;
+}
+
+static void address_out(void *address, socklen_t length)
+{
+	unsigned short family;
+
+	if (!address || length < 2)
+		return;
+	family = ((const unsigned char *)address)[1];
+	memcpy(address, &family, sizeof(family));
+}
+
+static int accept4(int descriptor, struct sockaddr *address, socklen_t *length, int flags)
+{
+	return apple_socket_flags(accept(descriptor, address, length), flags);
+}
+
+static ssize_t getrandom(void *buffer, size_t size, unsigned int flags)
+{
+	(void)flags;
+#ifdef HALO_IOS
+	/* (iOS has no getentropy) */
+	arc4random_buf(buffer, size);
+	return (ssize_t)size;
+#else
+	/* getentropy gives at most 256 bytes a call */
+	if (size > 256)
+		size = 256;
+	return getentropy(buffer, size) == 0 ? (ssize_t)size : -1;
+#endif
+}
+#else
+#define address_in(address, length, storage) ((void)(storage), (address))
+#define address_out(address, length) ((void)(address), (void)(length))
+#endif
 
 /* Winsock error codes (winsockx.h) */
 #define WSAEINTR 10004
@@ -144,7 +224,9 @@ int posix_socket_close(int socket)
 
 int posix_socket_bind(int socket, const void *address, int address_length)
 {
-	return succeed(bind(socket, address, (socklen_t)address_length));
+	struct sockaddr_storage storage;
+
+	return succeed(bind(socket, address_in(address, address_length, &storage), (socklen_t)address_length));
 }
 
 int posix_socket_connect(int socket, const void *address, int address_length)
@@ -155,7 +237,8 @@ int posix_socket_connect(int socket, const void *address, int address_length)
 	transport_endpoint_winsock.c); as WSAEINPROGRESS it gave up at once,
 	and every system link join failed, a split screen game's join of its
 	own host included. */
-	int result = connect(socket, address, (socklen_t)address_length);
+	struct sockaddr_storage storage;
+	int result = connect(socket, address_in(address, address_length, &storage), (socklen_t)address_length);
 
 	if (result < 0 && errno == EINPROGRESS)
 	{
@@ -176,7 +259,11 @@ int posix_socket_accept(int socket, void *address, int *address_length)
 	int result = accept4(socket, address, address_length ? &length : NULL, SOCK_CLOEXEC);
 
 	if (address_length)
+	{
 		*address_length = (int)length;
+		if (result >= 0)
+			address_out(address, length);
+	}
 	return succeed(result);
 }
 
@@ -185,11 +272,81 @@ int posix_socket_send(int socket, const void *buffer, int length, int flags)
 	return succeed((int)send(socket, buffer, (size_t)length, flags | MSG_NOSIGNAL));
 }
 
+#ifdef HALO_IOS
+/* iOS lets only applications Apple gives the multicast entitlement send
+broadcasts (sendto fails with EHOSTUNREACH): a broadcast goes to each
+address of the local networks instead (of a /22 at most, around this
+machine's), which the local network permission allows. The game's
+broadcasts are its system link searches and announcements, every second
+or two. */
+#define IOS_BROADCAST_MAXIMUM_HOSTS 1022
+
+static int ios_broadcast(int socket, const void *buffer, int length, int flags, const struct sockaddr_in *target)
+{
+	struct ifaddrs *interfaces, *entry;
+	int sent = 0;
+
+	if (getifaddrs(&interfaces) != 0)
+		return -1;
+	for (entry = interfaces; entry; entry = entry->ifa_next)
+	{
+		const struct sockaddr_in *own = (const struct sockaddr_in *)entry->ifa_addr;
+		const struct sockaddr_in *mask = (const struct sockaddr_in *)entry->ifa_netmask;
+		uint32_t address, netmask, host, first, last;
+
+		/* (the networks that would have the broadcast: Wi-Fi's, a wired
+		adapter's, not the cellular data's point-to-point link) */
+		if (!own || !mask || own->sin_family != AF_INET || !(entry->ifa_flags & IFF_UP) ||
+			!(entry->ifa_flags & IFF_BROADCAST) || (entry->ifa_flags & IFF_LOOPBACK))
+		{
+			continue;
+		}
+		address = ntohl(own->sin_addr.s_addr);
+		netmask = ntohl(mask->sin_addr.s_addr);
+		if (~netmask > IOS_BROADCAST_MAXIMUM_HOSTS + 1)
+			netmask = ~(uint32_t)(IOS_BROADCAST_MAXIMUM_HOSTS + 1);
+		first = (address & netmask) + 1;
+		last = (address | ~netmask) - 1;
+		for (host = first; host <= last; host++)
+		{
+			struct sockaddr_in destination = *target;
+
+			if (host == address)
+				continue;
+			destination.sin_addr.s_addr = htonl(host);
+			if (sendto(socket, buffer, (size_t)length, flags | MSG_NOSIGNAL, (const struct sockaddr *)&destination,
+				sizeof(destination)) == length)
+			{
+				sent++;
+			}
+		}
+	}
+	freeifaddrs(interfaces);
+	if (!sent)
+	{
+		errno = EHOSTUNREACH;
+		return -1;
+	}
+	return length;
+}
+#endif
+
 int posix_socket_sendto(int socket, const void *buffer, int length, int flags,
 	const void *address, int address_length)
 {
-	return succeed((int)sendto(socket, buffer, (size_t)length, flags | MSG_NOSIGNAL,
-		address, (socklen_t)address_length));
+	struct sockaddr_storage storage;
+	const void *native = address_in(address, address_length, &storage);
+
+#ifdef HALO_IOS
+	if (native && address_length >= (int)sizeof(struct sockaddr_in) &&
+		((const struct sockaddr_in *)native)->sin_family == AF_INET &&
+		((const struct sockaddr_in *)native)->sin_addr.s_addr == htonl(INADDR_BROADCAST))
+	{
+		return succeed(ios_broadcast(socket, buffer, length, flags, native));
+	}
+#endif
+	return succeed((int)sendto(socket, buffer, (size_t)length, flags | MSG_NOSIGNAL, native,
+		(socklen_t)address_length));
 }
 
 int posix_socket_recv(int socket, void *buffer, int length, int flags)
@@ -213,7 +370,11 @@ int posix_socket_recvfrom(int socket, void *buffer, int length, int flags,
 	message.msg_iovlen = 1;
 	result = (int)recvmsg(socket, &message, flags);
 	if (address_length)
+	{
 		*address_length = (int)message.msg_namelen;
+		if (result >= 0)
+			address_out(address, message.msg_namelen);
+	}
 	/* a datagram larger than the buffer: both give its start, but Winsock
 	with WSAEMSGSIZE, which the game takes as an error, not as the datagram */
 	if (result >= 0 && (message.msg_flags & MSG_TRUNC))
@@ -315,6 +476,8 @@ int posix_socket_getsockname(int socket, void *address, int *address_length)
 	int result = getsockname(socket, address, &length);
 
 	*address_length = (int)length;
+	if (result == 0)
+		address_out(address, length);
 	return succeed(result);
 }
 
@@ -324,6 +487,8 @@ int posix_socket_getpeername(int socket, void *address, int *address_length)
 	int result = getpeername(socket, address, &length);
 
 	*address_length = (int)length;
+	if (result == 0)
+		address_out(address, length);
 	return succeed(result);
 }
 

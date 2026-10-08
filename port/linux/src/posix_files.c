@@ -22,6 +22,13 @@ static void split64(unsigned long long value, posix_ulong *low, posix_ulong *hig
 	*high = (posix_ulong)(value >> 32);
 }
 
+#ifdef __APPLE__
+/* (the macOS host of the WebAssembly guest: port/macos) */
+#define st_mtim st_mtimespec
+#define st_atim st_atimespec
+#define st_ctim st_ctimespec
+#endif
+
 static void fill_information(const struct stat *st, struct posix_file_information *information)
 {
 	memset(information, 0, sizeof(*information));

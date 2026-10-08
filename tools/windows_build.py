@@ -52,14 +52,6 @@ TOML_DIR = Path("port/third_party/tomlc17")
 EXPAT_DIR = Path("port/third_party/expat")
 EXPAT_SOURCES = ("xmlparse.c", "xmlrole.c", "xmltok.c", "random_rand_s.c")
 KCP_DIR = Path("port/third_party/kcp")
-MONOCYPHER_DIR = Path("port/third_party/monocypher")
-# the port's zlib (port/third_party/zlib/zlib_prefixed.h), which inflates
-# the maps, the menus' and the HUD's PNGs and the updates
-ZLIB_DIR = Path("port/third_party/zlib")
-ZLIB_SOURCES = ("adler32.c", "crc32.c", "inffast.c", "inflate.c", "inftrees.c", "uncompr.c", "zutil.c")
-# (its names prefixed, and the one Z_PREFIX leaves, its error messages, which
-# the game's zlib names the same)
-ZLIB_DEFINES = ("-DZ_PREFIX", "-Dz_errmsg=z_port_errmsg")
 
 
 def updater_defines(release: bool) -> str:
@@ -301,11 +293,7 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
     # the high-res HUD's textures (port/assets/hud; port/linux/src/hud_hires.c)
     embedded_assets = hud_assets_build(n, "windows", BUILD / "generated" / "hud_hires_assets.c")
 
-    # (a debug build checks its stack frames (/GS), and stops at the first
-    # one overrun, as at the first failed assertion; a release build does
-    # not, so that an overrun nobody has met cannot end a game)
-    abi = " ".join(WINDOWS_ABI_FLAGS + [march_flag(sln)] + (["-DHALO_RELEASE"] if getattr(sln, "port_release", False)
-                                                            else ["-fstack-protector-strong"]))
+    abi = " ".join(WINDOWS_ABI_FLAGS + [march_flag(sln)] + (["-DHALO_RELEASE"] if getattr(sln, "port_release", False) else []))
     sdl_include = SDL_DIR / "include"
     libs = " ".join(
         [_quote(SDL_DIR / "lib" / "x86" / "SDL3.lib")]
@@ -319,14 +307,8 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
         # 32-bit address space
         "-Wl,/LARGEADDRESSAWARE",
         "-Wl,/STACK:0x800000",
+        "-Wl,/SUBSYSTEM:CONSOLE",
     ]
-    if getattr(sln, "port_release", False):
-        # no console window (the port's log goes to halo.log instead,
-        # win32_posix.c): under Wine (Proton, gamescope) the console window
-        # can hide the game's window
-        base_ldflags += ["-Wl,/SUBSYSTEM:WINDOWS", "-Wl,/ENTRY:mainCRTStartup"]
-    else:
-        base_ldflags += ["-Wl,/SUBSYSTEM:CONSOLE"]
 
     def emit(obj_dir: Path, output: Path, extra_cflags: List[str], extra_ldflags: List[str],
              extra_objects: List[Path], implicit_inputs: List[Path]) -> None:
@@ -357,20 +339,13 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
             # halo_menus.h), but not the Linux build's C runtime wrappers
             # next to them, which no game unit includes in quotes
             f"-iquote {LINUX_DIR / 'include'}",
-            # the headers of the port's own game units (port/linux/game), for
-            # the game sources that call them
-            f"-iquote {Path(linux_config['game_sources'])}",
             game_defines_and_includes(linux_config),
             # the Xbox SDK declarations (port/include/xdk) come before the
             # Windows SDK, which has headers of the same names
             f"-I{XDK_INCLUDE}",
         ])
         for source in game_sources(linux_config):
-            # The halt screen and version command identify this native build.
-            flags = game_cflags
-            if source.as_posix() == "source/main/main.c":
-                flags += " " + updater_defines(getattr(sln, "port_release", False))
-            add_object(source, flags)
+            add_object(source, game_cflags)
         for source in sorted(Path(linux_config["game_sources"]).glob("*.c")):
             add_object(source, game_cflags)
 
@@ -386,8 +361,6 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
             f"-I{TOML_DIR}",
             f"-I{EXPAT_DIR}",
             f"-I{KCP_DIR}",
-            f"-I{MONOCYPHER_DIR}",
-            f"-I{ZLIB_DIR}",
             # halo_linux_winsock_names.h, but not the Linux build's C runtime
             # wrappers next to it
             f"-iquote {LINUX_DIR / 'include'}",
@@ -414,9 +387,6 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
         for source in sorted((PORT_DIR / "src").glob("*.c")):
             if source.name == "win32_upnp.c":
                 add_object(source, f"{win32_cflags} {miniupnpc_include}")
-            elif source.name == "win32_crash.c":
-                # the build's number and configuration name its crash reports
-                add_object(source, f"{win32_cflags} {updater_defines(getattr(sln, 'port_release', False))}")
             else:
                 add_object(source, win32_cflags if source.name.startswith("win32_") else platform_cflags)
         # internet play's UPnP (port/third_party/miniupnpc), on Winsock, as
@@ -435,13 +405,6 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
             add_object(EXPAT_DIR / name, " ".join([abi, "-std=gnu11", f"-I{EXPAT_DIR}", "-w"]))
         # internet play's reliable streams (port/third_party/kcp; p2p.c)
         add_object(KCP_DIR / "ikcp.c", " ".join([abi, "-std=gnu11", "-w"]))
-        # internet play's signatures, for public games' listings
-        # (port/third_party/monocypher; p2p_crypto.c)
-        for name in ("monocypher.c", "monocypher-ed25519.c"):
-            add_object(MONOCYPHER_DIR / name, " ".join([abi, "-std=gnu11", "-w"]))
-        # the port's zlib
-        for name in ZLIB_SOURCES:
-            add_object(ZLIB_DIR / name, " ".join([abi, "-std=gnu11", *ZLIB_DEFINES, "-w"]))
         # the game's sin, pow and the rest, the same on every port
         # (port/include/halo_math.h)
         for source in musl_math_sources():
@@ -508,8 +471,5 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
     emit(obj_dir, output, lto_cflags + profile_use_flags(profile),
          lto_cflags + [OPTIMISATION] if lto_cflags else [], [], [profile] if profile else [])
     n.build(outputs=sdl_dll, rule="windows_copy", inputs=SDL_DIR / "lib" / "x86" / "SDL3.dll")
-    # internet play's MQTT brokers, a file beside the game (network.brokers_file)
-    brokers = BUILD / "brokers.txt"
-    n.build(outputs=brokers, rule="windows_copy", inputs=Path("port/assets/network/brokers.txt"))
-    n.build(outputs="windows", rule="phony", inputs=[output, sdl_dll, brokers])
+    n.build(outputs="windows", rule="phony", inputs=[output, sdl_dll])
     n.newline()

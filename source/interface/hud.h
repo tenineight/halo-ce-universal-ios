@@ -133,8 +133,7 @@ void hud_play_sound(
 	unsigned long state_flags,
 	struct tag_block const *sounds,
 	long *sound_indices,
-	word *played_flags,
-	short maximum_sound_count); /* port: what sound_indices holds */
+	word *played_flags);
 
 /* ---------- globals */
 

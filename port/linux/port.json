@@ -68,7 +68,6 @@
   "libraries": [
     "SDL3",
     "m",
-    "pthread",
-    "dl"
+    "pthread"
   ]
 }

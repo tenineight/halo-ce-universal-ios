@@ -95,7 +95,6 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries.h"
-#include "cseries/errors.h" /* port: error */
 #include "physics.h"
 
 #include "collision_features.h"
@@ -234,13 +233,6 @@ typedef char mass_point_datum_size_assert[
 
 /* ---------- prototypes */
 
-static short physics_mass_point_count(
-	struct physics_definition const *physics);
-static short physics_powered_mass_point_count(
-	struct physics_definition const *physics);
-static short physics_powered_mass_point_index(
-	struct physics_definition const *physics,
-	struct mass_point_definition const *mass_point_definition);
 static short get_material_type(
 	long object_index,
 	short material_index);
@@ -296,10 +288,6 @@ real_plane3d depths_of_hell =
 
 boolean debug_physics_disable_penetration_freeze = FALSE;
 
-/* port: whether a map's malformed physics was reported (once) */
-static boolean warned_about_physics_mass_points;
-static boolean warned_about_physics_inertial_matrix;
-
 /* ---------- public code */
 
 real pin_fraction(
@@ -327,75 +315,6 @@ real pin_fraction(
 	}
 }
 
-/* port: how many of a physics' mass points (from the map) are used: at
-most MAXIMUM_MASS_POINTS_PER_PHYSICS (the rest are not, reported once) */
-static short physics_mass_point_count(
-	struct physics_definition const *physics)
-{
-	long count = physics->mass_points.count;
-
-	if (count > MAXIMUM_MASS_POINTS_PER_PHYSICS)
-	{
-		if (!warned_about_physics_mass_points)
-		{
-			error(_error_silent, "a physics has %ld mass points (maximum %d)",
-				count,
-				MAXIMUM_MASS_POINTS_PER_PHYSICS);
-			warned_about_physics_mass_points = TRUE;
-		}
-		count = MAXIMUM_MASS_POINTS_PER_PHYSICS;
-	}
-
-	return (short)MAX(count, 0);
-}
-
-/* port: (as physics_mass_point_count, with
-MAXIMUM_POWERED_MASS_POINTS_PER_PHYSICS) */
-static short physics_powered_mass_point_count(
-	struct physics_definition const *physics)
-{
-	long count = physics->powered_mass_points.count;
-
-	if (count > MAXIMUM_POWERED_MASS_POINTS_PER_PHYSICS)
-	{
-		if (!warned_about_physics_mass_points)
-		{
-			error(_error_silent, "a physics has %ld powered mass points (maximum %d)",
-				count,
-				MAXIMUM_POWERED_MASS_POINTS_PER_PHYSICS);
-			warned_about_physics_mass_points = TRUE;
-		}
-		count = MAXIMUM_POWERED_MASS_POINTS_PER_PHYSICS;
-	}
-
-	return (short)MAX(count, 0);
-}
-
-/* port: a mass point's powered mass point (from the map), NONE if it
-names none of the physics' used ones (physics_powered_mass_point_count) */
-static short physics_powered_mass_point_index(
-	struct physics_definition const *physics,
-	struct mass_point_definition const *mass_point_definition)
-{
-	short powered_mass_point_index = mass_point_definition->powered_mass_point_index;
-
-	if (powered_mass_point_index != NONE &&
-		(powered_mass_point_index < 0 ||
-			powered_mass_point_index >= physics_powered_mass_point_count(physics)))
-	{
-		if (!warned_about_physics_mass_points)
-		{
-			error(_error_silent, "a mass point's powered mass point #%d is not one of its physics' %ld",
-				powered_mass_point_index,
-				physics->powered_mass_points.count);
-			warned_about_physics_mass_points = TRUE;
-		}
-		powered_mass_point_index = NONE;
-	}
-
-	return powered_mass_point_index;
-}
-
 boolean physics_get_features_in_sphere(
 	struct physics_instance const *instance,
 	real_point3d const *center,
@@ -406,11 +325,9 @@ boolean physics_get_features_in_sphere(
 {
 	short mass_point_index;
 	real scaled_radius;
-	/* port: (physics_mass_point_count) */
-	short mass_point_count = physics_mass_point_count(instance->physics);
 
 	for (mass_point_index = 0;
-		mass_point_index < mass_point_count;
+		mass_point_index < instance->physics->mass_points.count;
 		mass_point_index++)
 	{
 		struct mass_point_definition const *mass_point = TAG_BLOCK_GET_ELEMENT(
@@ -444,44 +361,30 @@ static short get_material_type(
 	long object_index,
 	short material_index)
 {
-	short material_type = NONE;
-
 	if (material_index != NONE)
 	{
 		if (object_index != NONE)
 		{
 			struct object_datum *object = object_get(object_index);
 			struct object_definition *definition = object_definition_get(object->definition_index);
+			struct collision_model *collision_model = collision_model_definition_get(
+				definition->object.collision_model.index);
 
-			/* port: (as in collision_model_get_material_type) */
-			if (definition->object.collision_model.index != NONE)
-			{
-				material_type = (short)collision_model_get_material_type(
-					collision_model_definition_get(definition->object.collision_model.index),
-					material_index);
-			}
+			return TAG_BLOCK_GET_ELEMENT(
+				&collision_model->resistance.materials,
+				material_index,
+				struct damage_resistance_material)->material_type;
 		}
 		else
 		{
-			struct structure_bsp *structure_bsp = global_structure_bsp_get();
-
-			/* port: a material (from the map) that is no material of the
-			bsp, or whose type is no material type, is none */
-			if (material_index >= 0 && material_index < structure_bsp->collision_materials.count)
-			{
-				material_type = TAG_BLOCK_GET_ELEMENT(
-					&structure_bsp->collision_materials,
-					material_index,
-					struct structure_collision_material)->runtime_physics_material_type;
-			}
-			if (material_type < 0 || material_type >= NUMBER_OF_MATERIAL_TYPES)
-			{
-				material_type = NONE;
-			}
+			return TAG_BLOCK_GET_ELEMENT(
+				&global_structure_bsp_get()->collision_materials,
+				material_index,
+				struct structure_collision_material)->runtime_physics_material_type;
 		}
 	}
 
-	return material_type;
+	return NONE;
 }
 
 void render_debug_physics(
@@ -491,8 +394,6 @@ void render_debug_physics(
 	struct object_definition *definition = object_definition_get(object->definition_index);
 	real_point3d center_of_mass;
 	short mass_point_index;
-	/* port: (physics_mass_point_count) */
-	short mass_point_count = physics_mass_point_count(instance->physics);
 
 	matrix4x3_transform_point(
 		&instance->world_matrix,
@@ -507,7 +408,7 @@ void render_debug_physics(
 		definition->object.bounding_radius);
 
 	for (mass_point_index = 0;
-		mass_point_index < mass_point_count;
+		mass_point_index < instance->physics->mass_points.count;
 		mass_point_index++)
 	{
 		struct mass_point_definition const *mass_point = TAG_BLOCK_GET_ELEMENT(
@@ -583,15 +484,12 @@ boolean physics_test_point(
 	real_point3d local_point;
 	struct physics_definition const *physics;
 	short mass_point_index;
-	short mass_point_count;
 
 	matrix4x3_inverse_transform_point(&instance->world_matrix, point, &local_point);
 	physics = instance->physics;
 
-	/* port: (physics_mass_point_count) */
-	mass_point_count = physics_mass_point_count(physics);
 	for (mass_point_index = 0;
-		mass_point_index < mass_point_count;
+		mass_point_index < physics->mass_points.count;
 		mass_point_index++)
 	{
 		struct mass_point_definition const *mass_point = TAG_BLOCK_GET_ELEMENT(
@@ -619,17 +517,14 @@ boolean physics_test_vector(
 	real_vector3d local_vector;
 	real_vector3d normal;
 	short mass_point_index;
-	short mass_point_count;
 
 	result->t = REAL_MAX;
 
 	matrix4x3_inverse_transform_point(&instance->world_matrix, point, &local_point);
 	matrix4x3_inverse_transform_vector(&instance->world_matrix, vector, &local_vector);
 
-	/* port: (physics_mass_point_count) */
-	mass_point_count = physics_mass_point_count(instance->physics);
 	for (mass_point_index = 0;
-		mass_point_index < mass_point_count;
+		mass_point_index < instance->physics->mass_points.count;
 		mass_point_index++)
 	{
 		struct mass_point_definition const *mass_point = TAG_BLOCK_GET_ELEMENT(
@@ -783,18 +678,14 @@ void physics_compute_new(
 	struct physics_definition const *physics = instance->physics;
 	real gravity = physics->gravity_scale*global_gravity;
 	short mass_point_index;
-	/* port: no more mass points than the caller's arrays hold, nor a
-	powered one the physics does not have (physics_mass_point_count,
-	physics_powered_mass_point_index) */
-	short mass_point_count = physics_mass_point_count(physics);
 
 	set_real_vector3d(total_force, 0.0f, 0.0f, -physics->mass*gravity);
 	set_real_vector3d(total_torque, 0.0f, 0.0f, 0.0f);
 
-	memset(mass_points, 0, sizeof(struct mass_point_datum)*mass_point_count);
+	memset(mass_points, 0, sizeof(struct mass_point_datum)*physics->mass_points.count);
 
 	for (mass_point_index = 0;
-		mass_point_index < mass_point_count;
+		mass_point_index < physics->mass_points.count;
 		mass_point_index++)
 	{
 		struct mass_point_definition const *mass_point_definition = TAG_BLOCK_GET_ELEMENT(
@@ -805,15 +696,14 @@ void physics_compute_new(
 		struct powered_mass_point_definition const *powered_mass_point_definition = NULL;
 		struct powered_mass_point_datum const *powered_mass_point = NULL;
 		real_vector3d powered_velocity;
-		short powered_mass_point_index = physics_powered_mass_point_index(physics, mass_point_definition);
 
-		if (powered_mass_point_index != NONE && powered_mass_points)
+		if (mass_point_definition->powered_mass_point_index != NONE && powered_mass_points)
 		{
 			powered_mass_point_definition = TAG_BLOCK_GET_ELEMENT(
 				&physics->powered_mass_points,
-				powered_mass_point_index,
+				mass_point_definition->powered_mass_point_index,
 				struct powered_mass_point_definition);
-			powered_mass_point = powered_mass_points + powered_mass_point_index;
+			powered_mass_point = powered_mass_points + mass_point_definition->powered_mass_point_index;
 		}
 
 		mass_point->flags = 0;
@@ -1208,19 +1098,14 @@ static boolean physics_compute_vehicle_collision(
 	real_vector3d torque0;
 	real_vector3d torque1;
 	short mass_point0_index;
-	short mass_point0_count;
-	short mass_point1_count;
 
 	set_real_vector3d(&force0, 0.0f, 0.0f, 0.0f);
 	set_real_vector3d(&force1, 0.0f, 0.0f, 0.0f);
 	set_real_vector3d(&torque0, 0.0f, 0.0f, 0.0f);
 	set_real_vector3d(&torque1, 0.0f, 0.0f, 0.0f);
 
-	/* port: (physics_mass_point_count) */
-	mass_point0_count = physics_mass_point_count(instance0->physics);
-	mass_point1_count = physics_mass_point_count(instance1->physics);
 	for (mass_point0_index = 0;
-		mass_point0_index < mass_point0_count;
+		mass_point0_index < instance0->physics->mass_points.count;
 		mass_point0_index++)
 	{
 		struct mass_point_definition const *mass_point0 = TAG_BLOCK_GET_ELEMENT(
@@ -1233,7 +1118,7 @@ static boolean physics_compute_vehicle_collision(
 		matrix4x3_transform_point(&instance0->world_matrix, &mass_point0->position, &point0);
 
 		for (mass_point1_index = 0;
-			mass_point1_index < mass_point1_count;
+			mass_point1_index < instance1->physics->mass_points.count;
 			mass_point1_index++)
 		{
 			struct mass_point_definition const *mass_point1 = TAG_BLOCK_GET_ELEMENT(
@@ -1435,8 +1320,6 @@ void physics_update_new(
 	real_vector3d forward;
 	real_vector3d up;
 	short mass_point_index;
-	/* port: (as in physics_compute_new) */
-	short mass_point_count = physics_mass_point_count(instance->physics);
 
 	match_assert(
 		"c:\\halo\\SOURCE\\physics\\physics.c",
@@ -1459,19 +1342,6 @@ void physics_update_new(
 	position.y = vehicle->object.position.y + linear_velocity.j;
 	position.z = vehicle->object.position.z + linear_velocity.k;
 
-	/* port: a physics (from the map) without its inverse inertia matrix
-	(the second of its two; the retail ones all have both) turns no faster */
-	if (instance->physics->inertial_matrix.count < 2)
-	{
-		if (!warned_about_physics_inertial_matrix)
-		{
-			error(_error_silent, "a physics has %ld inertial matrices (2 expected)",
-				instance->physics->inertial_matrix.count);
-			warned_about_physics_inertial_matrix = TRUE;
-		}
-		set_real_vector3d(&angular_acceleration, 0.0f, 0.0f, 0.0f);
-	}
-	else
 	{
 		real_matrix3x3 frame;
 		real_matrix3x3 world_inverse_inertia;
@@ -1545,7 +1415,7 @@ void physics_update_new(
 			world_matrix.position = center_of_mass;
 
 			for (mass_point_index = 0;
-				mass_point_index < mass_point_count;
+				mass_point_index < instance->physics->mass_points.count;
 				mass_point_index++)
 			{
 				struct mass_point_definition const *mass_point_definition = TAG_BLOCK_GET_ELEMENT(
@@ -1629,7 +1499,7 @@ void physics_update_new(
 		short in_water_count = 0;
 
 		for (mass_point_index = 0;
-			mass_point_index < mass_point_count;
+			mass_point_index < instance->physics->mass_points.count;
 			mass_point_index++)
 		{
 			struct mass_point_datum const *mass_point = mass_points + mass_point_index;
@@ -1643,7 +1513,7 @@ void physics_update_new(
 		SET_FLAG(
 			vehicle->object.flags,
 			_object_at_rest_bit,
-			at_rest_count == mass_point_count &&
+			at_rest_count == instance->physics->mass_points.count &&
 			on_ground_count >= 3 &&
 			on_volatile_surface_count == 0 &&
 			magnitude_squared3d(&linear_velocity) <= 0.0011111111f &&
@@ -1656,7 +1526,7 @@ void physics_update_new(
 		SET_FLAG(
 			vehicle->object.flags,
 			_object_wholly_under_media_bit,
-			in_water_count == mass_point_count);
+			in_water_count == instance->physics->mass_points.count);
 	}
 
 	return;
@@ -1688,8 +1558,6 @@ static void physics_update_old(
 	short volatile_mass_point_count = 0;
 	short submerged_mass_point_count = 0;
 	short mass_point_index;
-	/* port: (as in physics_compute_new) */
-	short mass_point_count = physics_mass_point_count(physics);
 
 	matrix4x3_from_point_and_vectors(
 		&world_matrix,
@@ -1701,9 +1569,8 @@ static void physics_update_old(
 	{
 		short powered_mass_point_index;
 
-		/* port: (physics_powered_mass_point_count) */
 		for (powered_mass_point_index = 0;
-			powered_mass_point_index < physics_powered_mass_point_count(physics);
+			powered_mass_point_index < physics->powered_mass_points.count;
 			powered_mass_point_index++)
 		{
 			struct powered_mass_point_datum *powered_mass_point =
@@ -1716,7 +1583,7 @@ static void physics_update_old(
 		}
 	}
 
-	memset(mass_points, 0, sizeof(struct mass_point_datum)*mass_point_count);
+	memset(mass_points, 0, sizeof(struct mass_point_datum)*physics->mass_points.count);
 
 	if (magic_force)
 	{
@@ -1736,7 +1603,7 @@ static void physics_update_old(
 	}
 
 	for (mass_point_index = 0;
-		mass_point_index < mass_point_count;
+		mass_point_index < physics->mass_points.count;
 		mass_point_index++)
 	{
 		struct mass_point_definition const *mass_point_definition = TAG_BLOCK_GET_ELEMENT(
@@ -1747,19 +1614,17 @@ static void physics_update_old(
 		struct powered_mass_point_definition const *powered_mass_point_definition = NULL;
 		struct powered_mass_point_datum *powered_mass_point = NULL;
 		real_point3d local_position;
-		/* port: (physics_powered_mass_point_index) */
-		short powered_mass_point_index = physics_powered_mass_point_index(physics, mass_point_definition);
 
-		if (powered_mass_point_index != NONE && powered_mass_points)
+		if (mass_point_definition->powered_mass_point_index != NONE && powered_mass_points)
 		{
 			powered_mass_point_definition = TAG_BLOCK_GET_ELEMENT(
 				&physics->powered_mass_points,
-				powered_mass_point_index,
+				mass_point_definition->powered_mass_point_index,
 				struct powered_mass_point_definition);
 			if (powered_mass_point_definition)
 			{
 				powered_mass_point =
-					powered_mass_points + powered_mass_point_index;
+					powered_mass_points + mass_point_definition->powered_mass_point_index;
 			}
 		}
 
@@ -2109,7 +1974,7 @@ static void physics_update_old(
 			real moment_of_inertia = 0.0f;
 
 			for (mass_point_index = 0;
-				mass_point_index < mass_point_count;
+				mass_point_index < physics->mass_points.count;
 				mass_point_index++)
 			{
 				struct mass_point_definition const *mass_point_definition = TAG_BLOCK_GET_ELEMENT(
@@ -2206,7 +2071,7 @@ static void physics_update_old(
 	SET_FLAG(
 		object->object.flags,
 		_object_at_rest_bit,
-		stopped_mass_point_count == mass_point_count &&
+		stopped_mass_point_count == physics->mass_points.count &&
 		grounded_mass_point_count >= 3 &&
 		volatile_mass_point_count == 0 &&
 		magnitude_squared3d(&object->object.translational_velocity) <= 0.0011111111f &&
@@ -2219,7 +2084,7 @@ static void physics_update_old(
 	SET_FLAG(
 		object->object.flags,
 		_object_wholly_under_media_bit,
-		submerged_mass_point_count == mass_point_count);
+		submerged_mass_point_count == physics->mass_points.count);
 	match_assert_valid_real_vector3d_axes2(
 		"c:\\halo\\SOURCE\\physics\\physics.c",
 		1595,
@@ -2259,9 +2124,8 @@ void physics_update(
 	physics_instance_new(&instance, object_index);
 	if (powered_mass_points)
 	{
-		/* port: (physics_powered_mass_point_count) */
 		for (powered_mass_point_index = 0;
-			powered_mass_point_index < physics_powered_mass_point_count(physics);
+			powered_mass_point_index < physics->powered_mass_points.count;
 			powered_mass_point_index++)
 		{
 			struct powered_mass_point_datum *powered_mass_point =

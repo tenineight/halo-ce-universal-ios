@@ -298,7 +298,7 @@ void ai_profile_display(
 		ai_profile.meters[_ai_meter_units_updated].current_value,
 		ai_profile.meters[_ai_meter_units].current_value,
 		ai_profile.meters[_ai_meter_props].current_value,
-		HALO_PORT_MAXIMUM_PROPS);
+		768);
 	return;
 }
 
@@ -450,7 +450,7 @@ static void ai_profile_render_encounters(
 		ai_profile.meters[_ai_meter_encounters_updated].current_value,
 		ai_profile.meters[_ai_meter_encounters].current_value,
 		ai_profile.meters[_ai_meter_props].current_value,
-		HALO_PORT_MAXIMUM_PROPS);
+		768);
 	ai_profile_draw_string(profilestring, NUMBEROF(tab_stops), tab_stops, global_real_argb_white);
 	return;
 }

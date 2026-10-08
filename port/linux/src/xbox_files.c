@@ -7,9 +7,6 @@ Xbox paths are translated below two roots. d:\ is the data root, the
 directory holding the game's maps/ folder: paths.data (port_config.c), else the current
 directory when it has maps/, else assets/ in the current directory or two
 levels above the executable (the repository root for build/linux/halo).
-h:\ is the Halo Custom Edition install paths.custom_edition names, if any
-(its maps folder holds the resource maps Custom Edition maps need, and more
-maps).
 Every other drive letter X:\ is the subdirectory X/ of the save root (z:\ holds the persistent cache and saves,
 u:\ user data, t:\ title data): paths.saves, else
 $XDG_DATA_HOME/halo-linux or ~/.local/share/halo-linux. Path components are
@@ -19,6 +16,9 @@ matched case-insensitively, like the Xbox's FATX volumes.
 #include "platform.h"
 #include "posix.h"
 #include "port_config.h"
+#ifdef __wasm__
+#include <SDL3/SDL_filesystem.h>
+#endif
 
 #include <ctype.h>
 #include <errno.h>
@@ -72,7 +72,14 @@ const char *platform_data_root(void)
 		{
 			char executable[MAX_PATH];
 			char executable_directory[MAX_PATH] = "";
+#ifdef __wasm__
+			/* the WebAssembly guest's executable is its host's: the folder
+			it gives for one (on macOS, Application Support/Halo, as an app
+			bundle cannot be written to; port/macos/README.md) */
+			ssize_t length = snprintf(executable, sizeof(executable), "%shalo", SDL_GetBasePath());
+#else
 			ssize_t length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+#endif
 
 			if (length > 0)
 			{
@@ -166,40 +173,22 @@ const char *platform_save_root(void)
 		else if (getenv("APPDATA") && *getenv("APPDATA"))
 			snprintf(root, sizeof(root), "%s/halo", getenv("APPDATA"));
 #endif
+#ifdef __wasm__
+		/* the macOS build: next to its settings, in its own folder of
+		Application Support */
+		else if (SDL_GetBasePath()[0])
+			snprintf(root, sizeof(root), "%ssaves", SDL_GetBasePath());
+#else
 		else if (data_home && *data_home)
 			snprintf(root, sizeof(root), "%s/halo-linux", data_home);
 		else if (home && *home)
 			snprintf(root, sizeof(root), "%s/.local/share/halo-linux", home);
+#endif
 		else
 			snprintf(root, sizeof(root), "%s", platform_data_root());
 		trim_separators(root);
 		make_directories(root);
 		platform_log("save root: %s", root);
-	}
-	return root;
-}
-
-const char *platform_custom_edition_root(void)
-{
-	static char root[MAX_PATH];
-	static int found;
-
-	if (!found)
-	{
-		char maps[MAX_PATH + 8];
-		struct posix_file_information information;
-
-		found = 1;
-		snprintf(root, sizeof(root), "%s", config_string("paths.custom_edition"));
-		trim_separators(root);
-		snprintf(maps, sizeof(maps), "%s/maps", root);
-		if (root[0] && posix_stat(maps, &information) != 0)
-		{
-			platform_log("Halo Custom Edition: %s has no maps folder; not using it", root);
-			root[0] = 0;
-		}
-		if (root[0])
-			platform_log("Halo Custom Edition: using the install at %s", root);
 	}
 	return root;
 }
@@ -215,11 +204,7 @@ void platform_translate_path(const char *xbox_path, char *host_path, unsigned lo
 	{
 		char drive = (char)(cursor[0] | 0x20);
 
-		if (drive == 'h' && platform_custom_edition_root()[0])
-		{
-			snprintf(resolved, sizeof(resolved), "%s", platform_custom_edition_root());
-		}
-		else if (drive != 'd')
+		if (drive != 'd')
 		{
 			struct posix_file_information information;
 
@@ -242,10 +227,7 @@ void platform_translate_path(const char *xbox_path, char *host_path, unsigned lo
 		while (*cursor && *cursor != '\\' && *cursor != '/' && component_length + 1 < sizeof(component))
 			component[component_length++] = *cursor++;
 		component[component_length] = '\0';
-		/* . and .. (and Windows' spellings of them, with trailing dots and
-		spaces) are skipped: FATX names are never only dots, and .. would
-		leave the root */
-		if (!component_length || strspn(component, ". ") == component_length)
+		if (!component_length || !strcmp(component, "."))
 			continue;
 
 		if (posix_find_entry_case_insensitive(resolved, component, on_disk, sizeof(on_disk)))

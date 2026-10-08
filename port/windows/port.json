@@ -7,8 +7,7 @@
     "msvc_crt.c",
     "msvc_wide.c",
     "posix_update.c",
-    "posix_upnp.c",
-    "posix_trace_marker.c"
+    "posix_upnp.c"
   ],
   "libraries": [
     "ws2_32",
@@ -17,7 +16,6 @@
     "winmm",
     "user32",
     "advapi32",
-    "winhttp",
-    "dbghelp"
+    "winhttp"
   ]
 }

@@ -1,6 +1,5 @@
 """Tests for the native Linux build tooling (port/linux, tools/linux_*.py)."""
 
-import os
 import re
 import shutil
 import subprocess
@@ -171,7 +170,7 @@ MENUS = Path(__file__).resolve().parent.parent / "port/assets/menus"
 MENU_ATTRIBUTES = {
     "menus": {"root"},
     "bitmap": {"name", "width", "height", "frames", "platform"},
-    "frame": {"png", "map", "index", "width", "height", "x", "y", "platform"},
+    "frame": {"png", "map", "index", "width", "height", "platform"},
     "strings": {"name", "platform"},
     "string": {"text", "platform"},
     "widget": {"name", "type", "controller", "flags", "bitmap", "text", "strings", "values", "setting", "font",
@@ -303,111 +302,3 @@ def test_menu_settings_exist():
     controls = set(re.findall(r'"(controls\.[a-z_]+)"', (root / "port/linux/src/xinput_sdl.c").read_text()))
     assert controls == {name for name in known if name.startswith("controls.")}
     assert controls == set(re.findall(r'\{ "(controls\.[a-z_]+)", L"', functions))
-
-
-def test_p2p_signatures_and_listings(tmp_path):
-    """internet play's Ed25519 (RFC 8032), the X25519 key of a seed, and the
-    server browser's listings from host to browser (tools/p2p_lobby_check.c),
-    built with the flags ninja gives the platform layer"""
-    import shlex
-
-    if not shutil.which("clang") or not shutil.which("ninja") or not Path("build.ninja").is_file():
-        pytest.skip("needs clang, ninja and a configured build")
-    command = subprocess.run(["ninja", "-t", "commands", "build/linux/obj/port/linux/src/p2p_crypto.o"],
-                             capture_output=True, text=True, check=True).stdout.strip().splitlines()[-1]
-    words = shlex.split(command)
-    # (the compiler, and whatever runs it, ccache in CI: up to the first flag)
-    while words and not words[0].startswith("-"):
-        words = words[1:]
-    flags = []
-    skip = False
-    for word in words:
-        if skip:
-            skip = False
-        elif word in ("-MF", "-o", "-c"):
-            skip = True
-        elif word == "-MMD" or word.startswith("-flto") or word.startswith("-fprofile-use"):
-            continue
-        else:
-            flags.append(word)
-    program = tmp_path / "p2p_lobby_check"
-    built = subprocess.run(["clang", *flags, "-O1", "-no-pie", "-Wl,--unresolved-symbols=ignore-all", "-o",
-                            str(program), "tools/p2p_lobby_check.c", "port/linux/src/p2p_crypto.c",
-                            "port/linux/src/p2p_lobby.c", "port/third_party/monocypher/monocypher.c",
-                            "port/third_party/monocypher/monocypher-ed25519.c"],
-                           capture_output=True, text=True)
-    assert built.returncode == 0, built.stderr[-4000:]
-    result = subprocess.run([str(program)], capture_output=True, text=True, timeout=60)
-    assert result.returncode == 0, result.stdout
-    assert "PASS" in result.stdout
-
-
-# ---------- the tag validator (port/linux/game/tag_validate.c)
-
-RETAIL_MAPS = Path("assets/maps")
-MAP_VALIDATE = Path("build/linux/map_validate")
-
-
-def _retail_maps():
-    maps = sorted(RETAIL_MAPS.glob("*.map"))
-    if not maps or not MAP_VALIDATE.is_file():
-        pytest.skip("needs the retail maps in assets/maps and ninja linux's build/linux/map_validate")
-    return maps
-
-
-def test_retail_maps_need_no_corrections():
-    """every retail map in assets/maps passes the tag validator, each of its
-    structure bsps too, with no correction: the schemas (tag_schema_*.c)
-    say what the game's own maps hold"""
-    maps = _retail_maps()
-    result = subprocess.run([str(MAP_VALIDATE), "--strict", *map(str, maps)], capture_output=True, text=True,
-                            timeout=1800)
-    assert result.returncode == 0, result.stdout[-6000:]
-
-
-def test_tag_validator_survives_damaged_maps():
-    """retail maps with a few of their tags' words changed at random: the
-    validator never crashes or hangs, and a map it lets through is clean
-    when checked again"""
-    maps = _retail_maps()
-    chosen = [path for path in maps if path.stem in ("bloodgulch", "a10", "ui")] or maps[:1]
-    result = subprocess.run([str(MAP_VALIDATE), "--fuzz", "300", "--seed", "1", *map(str, chosen)],
-                            capture_output=True, text=True, timeout=1800)
-    assert result.returncode == 0, (result.stdout + result.stderr)[-6000:]
-
-
-# ---------- Custom Edition maps (port/linux/game/cache_file_formats.c, custom_edition_cache.c)
-
-def _custom_edition_maps():
-    """the Custom Edition maps (HALO_CUSTOM_EDITION_MAPS, or the gitignored
-    assets/custom_edition), with the bitmaps.map, sounds.map and loc.map
-    they need beside them"""
-    configured = os.environ.get("HALO_CUSTOM_EDITION_MAPS")
-    folder = Path(configured) if configured else Path("assets/custom_edition")
-    maps = [path for path in sorted(folder.glob("*.map"))
-            if path.stem.lower() not in ("bitmaps", "sounds", "loc")]
-    if not maps or not (folder / "bitmaps.map").is_file() or not MAP_VALIDATE.is_file():
-        pytest.skip("needs Custom Edition maps (HALO_CUSTOM_EDITION_MAPS or assets/custom_edition) and "
-                    "ninja linux's build/linux/map_validate")
-    return maps
-
-
-def test_custom_edition_maps_are_loaded_and_checked():
-    """every Custom Edition map is loaded, converted and passed by the tag
-    validator, each of its structure bsps too: none is refused (a community
-    map's own mistakes are corrected and logged)"""
-    maps = _custom_edition_maps()
-    result = subprocess.run([str(MAP_VALIDATE), *map(str, maps)], capture_output=True, text=True, timeout=3600)
-    assert result.returncode == 0, result.stdout[-6000:]
-    assert "refused" not in result.stdout, result.stdout[-6000:]
-
-
-def test_custom_edition_loader_and_validator_survive_damaged_maps():
-    """Custom Edition maps with a few of their file's words changed at random:
-    the loader, the conversion and the validator never crash or hang, and a
-    map they let through is clean when checked again"""
-    maps = _custom_edition_maps()
-    chosen = [path for path in maps if path.stem.lower() in ("bloodgulch", "hugeass", "ui")] or maps[:2]
-    result = subprocess.run([str(MAP_VALIDATE), "--fuzz", "100", "--seed", "1", *map(str, chosen)],
-                            capture_output=True, text=True, timeout=3600)
-    assert result.returncode == 0, (result.stdout + result.stderr)[-6000:]

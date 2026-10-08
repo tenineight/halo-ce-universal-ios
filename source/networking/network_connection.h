@@ -51,8 +51,6 @@ boolean network_connection_connect(
 struct network_connection *network_connection_new(
 	unsigned long flags,
 	word well_known_port);
-boolean network_connection_last_read_was_unreliable(
-	void);
 boolean network_connection_read(
 	struct network_connection *connection,
 	void *buffer,

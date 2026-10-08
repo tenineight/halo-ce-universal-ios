@@ -12,20 +12,25 @@ kernel owns the whole 4 GB address space, so the layer reserves the same
 virtual window at start-up and allocates page-granular blocks inside it:
 placed requests at exactly the address asked for, the rest top-down as the
 Xbox kernel does.
-
-Halo Custom Edition maps need the window their tag data is linked to,
-0x40440000, reserved the same way when the game.custom_edition setting is on
-(port/linux/game/custom_edition_cache.c).
 */
 
 #include "platform.h"
-#include "port_config.h"
-#include "../game/cache_file_formats.h"
 
 #include <errno.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <unistd.h>
+#ifdef __wasm__
+/* The WebAssembly guest's window is part of its linear memory, which its
+host maps (port/wasm/README.md): the guest grows the memory over the window
+once, and the host replaces and protects pages of it */
+#include "guest_host.h"
+#define PROT_NONE HOST_PROT_NONE
+#define PROT_READ HOST_PROT_READ
+#define PROT_WRITE HOST_PROT_WRITE
+#define PROT_EXEC HOST_PROT_READ
+#else
+#include <sys/mman.h>
+#endif
 
 #define PAGE_SIZE_BYTES 0x1000UL
 #define CONTIGUOUS_PAGE_COUNT (PLATFORM_CONTIGUOUS_SIZE / PAGE_SIZE_BYTES)
@@ -36,7 +41,6 @@ static DWORD page_protection[CONTIGUOUS_PAGE_COUNT];
 static unsigned long block_page_count[CONTIGUOUS_PAGE_COUNT];
 static BOOL arena_reserved = FALSE;
 static pthread_mutex_t arena_lock = PTHREAD_MUTEX_INITIALIZER;
-static void *custom_edition_tag_cache = NULL;
 
 static int protection_to_host(DWORD protect)
 {
@@ -51,11 +55,49 @@ static int protection_to_host(DWORD protect)
 	}
 }
 
+/* fresh zeroed pages at address, replacing what was there; 0 on success */
+static int pages_map(void *address, unsigned long size, int protection)
+{
+#ifdef __wasm__
+	return host_memory_map((unsigned int)address, size, protection);
+#else
+	return mmap(address, size, protection, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED |
+		(protection == PROT_NONE ? MAP_NORESERVE : 0), -1, 0) == address ? 0 : -1;
+#endif
+}
+
+static int pages_protect(void *address, unsigned long size, int protection)
+{
+#ifdef __wasm__
+	return host_memory_protect((unsigned int)address, size, protection);
+#else
+	return mprotect(address, size, protection);
+#endif
+}
+
 /* Reserve the window before anything else can map into it. */
 __attribute__((constructor(101)))
 static void contiguous_arena_reserve(void)
 {
 	void *wanted = (void *)PLATFORM_CONTIGUOUS_BASE;
+#ifdef __wasm__
+	/* the linear memory starts at the window's base (the heap lies below,
+	tools/macos_build.py); grow it over the window, which then starts out
+	inaccessible as on the other ports */
+	unsigned long size = __builtin_wasm_memory_size(0) * 0x10000UL;
+
+	if (size == PLATFORM_CONTIGUOUS_BASE &&
+		__builtin_wasm_memory_grow(0, PLATFORM_CONTIGUOUS_SIZE / 0x10000UL) != (unsigned long)-1 &&
+		pages_map(wanted, PLATFORM_CONTIGUOUS_SIZE, PROT_NONE) == 0)
+	{
+		arena_reserved = TRUE;
+	}
+	else
+	{
+		platform_log("cannot reserve the Xbox contiguous memory window at %p (the memory is %lu bytes)",
+			wanted, size);
+	}
+#else
 	void *result = mmap(wanted, PLATFORM_CONTIGUOUS_SIZE, PROT_NONE,
 		MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
 
@@ -70,37 +112,7 @@ static void contiguous_arena_reserve(void)
 		platform_log("cannot reserve the Xbox contiguous memory window at %p (%s)",
 			wanted, strerror(errno));
 	}
-}
-
-/* The Custom Edition tag cache, reserved before anything else can map into
-it (its pages are backed as they are touched); only when Custom Edition maps
-may run, as it takes 23 MB of the address space. */
-__attribute__((constructor(102)))
-static void custom_edition_tag_cache_reserve(void)
-{
-	void *wanted = (void *)CUSTOM_EDITION_TAG_CACHE_ADDRESS;
-	void *result;
-
-	if (!config_boolean("game.custom_edition"))
-		return;
-	result = mmap(wanted, CUSTOM_EDITION_TAG_CACHE_BYTES, PROT_READ | PROT_WRITE,
-		MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
-	if (result == wanted)
-	{
-		custom_edition_tag_cache = result;
-	}
-	else
-	{
-		if (result != MAP_FAILED)
-			munmap(result, CUSTOM_EDITION_TAG_CACHE_BYTES);
-		platform_log("cannot reserve the Custom Edition tag cache at %p (%s): Custom Edition maps cannot run",
-			wanted, strerror(errno));
-	}
-}
-
-void *halo_custom_edition_tag_cache(void)
-{
-	return custom_edition_tag_cache;
+#endif
 }
 
 BOOL platform_is_contiguous(const void *address)
@@ -179,8 +191,7 @@ void *platform_contiguous_alloc(unsigned long size, unsigned long alignment,
 	address = (void *)(PLATFORM_CONTIGUOUS_BASE + first * PAGE_SIZE_BYTES);
 	memory_watch_forget(address, count * PAGE_SIZE_BYTES);
 	/* map fresh zeroed pages over the reservation */
-	if (mmap(address, count * PAGE_SIZE_BYTES, protection_to_host(protect),
-		MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) != address)
+	if (pages_map(address, count * PAGE_SIZE_BYTES, protection_to_host(protect)) != 0)
 	{
 		pthread_mutex_unlock(&arena_lock);
 		return NULL;
@@ -204,8 +215,7 @@ void platform_contiguous_free(void *address)
 	if (count)
 	{
 		memory_watch_forget(address, count * PAGE_SIZE_BYTES);
-		mmap(address, count * PAGE_SIZE_BYTES, PROT_NONE,
-			MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+		pages_map(address, count * PAGE_SIZE_BYTES, PROT_NONE);
 		for (page = first; page < first + count; page++)
 			page_protection[page] = 0;
 		block_page_count[first] = 0;
@@ -247,7 +257,7 @@ BOOL WINAPI VirtualProtect(LPVOID address, SIZE_T size, DWORD new_protect, PDWOR
 		*old_protect = platform_is_contiguous(address) ?
 			page_protection[(start - PLATFORM_CONTIGUOUS_BASE) / PAGE_SIZE_BYTES] : PAGE_READWRITE;
 	memory_watch_forget((void *)start, end - start);
-	if (mprotect((void *)start, end - start, protection_to_host(new_protect)) != 0)
+	if (pages_protect((void *)start, end - start, protection_to_host(new_protect)) != 0)
 	{
 		platform_set_last_error_from_errno(errno);
 		return FALSE;

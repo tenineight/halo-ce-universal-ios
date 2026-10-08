@@ -29,7 +29,6 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries.h"
-#include "cseries/errors.h" /* port: error */
 #include "bsp3d.h"
 #include "math/geometry.h"
 
@@ -89,9 +88,6 @@ static __inline real bsp3d_polygon_plane_distance_to_point(
 
 long node_count;
 
-/* port: whether a map's malformed bsp3d was reported (once) */
-static boolean warned_about_bsp3d_nodes;
-
 /* ---------- public code */
 
 long bsp3d_test_point(
@@ -99,32 +95,13 @@ long bsp3d_test_point(
 	long node_index,
 	union real_point3d const *point)
 {
-	short depth = 0;
-
 	do
 	{
-		struct bsp3d_node const *node;
-		real_plane3d const *plane;
-
-		/* port: a node (from the map) that is no node, or deeper than
-		MAXIMUM_BSP3D_TRAVERSAL_DEPTH, is solid */
-		if (node_index < 0 ||
-			node_index >= bsp->nodes.count ||
-			depth++ >= MAXIMUM_BSP3D_TRAVERSAL_DEPTH)
-		{
-			if (!warned_about_bsp3d_nodes)
-			{
-				error(_error_silent, "a bsp3d node is not one of the bsp's, or is more than %d deep",
-					MAXIMUM_BSP3D_TRAVERSAL_DEPTH);
-				warned_about_bsp3d_nodes = TRUE;
-			}
-			return NONE;
-		}
-		node = TAG_BLOCK_GET_ELEMENT(
+		struct bsp3d_node const *node = TAG_BLOCK_GET_ELEMENT(
 			&bsp->nodes,
 			node_index,
 			struct bsp3d_node);
-		plane = TAG_BLOCK_GET_ELEMENT(
+		real_plane3d const *plane = TAG_BLOCK_GET_ELEMENT(
 			&bsp->planes,
 			node->plane_designator,
 			real_plane3d);

@@ -86,12 +86,8 @@ symbols in this file:
 #include "main/main.h"
 #include "memory/data.h"
 #include "network_game_globals.h"
-#include "network_messages.h"
 #include "network_game_manager.h"
 #include "network_game_ui.h"
-#include "networking/network_server_manager.h"
-#include "objects/objects.h"
-#include "units/units.h"
 #include "text/unicode.h"
 
 #include <xtl.h>
@@ -111,34 +107,13 @@ players in. So there each player's datum is its slot in the host's player
 list: every machine makes it there (network_game_spawn_player), and the host
 gives a player added to the game in progress a slot whose datum is free.
 (Only in a game: in the lobby the host runs the user interface's scenario,
-whose local player holds datum 0, and a full lobby could not use slot 0.)
-A player who quit the game holds his slot no longer once his unit is gone:
-his datum gives way to the next player there (network_game_spawn_player),
-so that those who quit do not keep the game from filling. Nor in the lobby
-between games, where the last game's datums stay until the next is made. */
-/* a player who quit the game and has no unit left: his slot can be another's */
-static boolean network_game_player_slot_reusable(
-	struct player_datum const *player)
-{
-	return player->quit_out_of_game && player->unit_index == NONE;
-}
-
+whose local player holds datum 0, and a full lobby could not use slot 0.) */
 static boolean network_game_player_slot_held(
 	long slot)
 {
-	struct network_game_server *server = global_network_game_server_get();
-	struct player_datum *player;
-
-	if (!game_in_progress() || !game_engine_running() ||
-		!player_data || !player_data->valid || slot >= player_data->maximum_count ||
-		(server && !network_game_server_playing(server)))
-	{
-		return FALSE;
-	}
-	player = (struct player_datum *)((byte *)player_data->data + player_data->size * slot);
-	if (((struct datum_header *)player)->identifier == 0)
-		return FALSE;
-	return !network_game_player_slot_reusable(player);
+	return game_in_progress() && game_engine_running() &&
+		player_data && player_data->valid && slot < player_data->maximum_count &&
+		((struct datum_header *)((byte *)player_data->data + player_data->size * slot))->identifier != 0;
 }
 
 enum
@@ -401,7 +376,7 @@ boolean network_game_add_player(
 	}
 	else
 	{
-		network_event("game is already at maximum players; can't add new player");
+		error(2, "game is already at maximum players; can't add new player");
 	}
 
 	return result;
@@ -483,36 +458,6 @@ boolean network_game_spawn_player(
 	give it) */
 	if (VALID_INDEX(player->player_list_index, NETWORK_GAME_PLAYER_SLOTS))
 	{
-		/* port: a player who quit there gives way (network_game_player_slot_held),
-		and his units forget him */
-		if (player_data && player_data->valid && player->player_list_index < player_data->maximum_count)
-		{
-			struct player_datum *quitter = (struct player_datum *)((byte *)player_data->data +
-				player_data->size * player->player_list_index);
-
-			/* (the host's choice stands: a client whose clock has not yet
-			come to the quit of the player there gives way too, to another
-			machine's player) */
-			if (((struct datum_header *)quitter)->identifier != 0 &&
-				(network_game_player_slot_reusable(quitter) ||
-					quitter->network_player_data.machine_index != player->machine_index ||
-					quitter->network_player_data.controller_index != player->controller_index))
-			{
-				long quitter_index = ((long)(word)((struct datum_header *)quitter)->identifier << 16) |
-					player->player_list_index;
-				struct object_iterator iterator;
-
-				object_iterator_new(&iterator, _object_mask_unit, 0);
-				while (object_iterator_next(&iterator))
-				{
-					struct unit_datum *unit = unit_get(iterator.index);
-
-					if (unit->unit.player_index == quitter_index)
-						unit->unit.player_index = NONE;
-				}
-				player_delete(quitter_index);
-			}
-		}
 		player_index = player_new(player->machine_index,
 			((long)(word)player_data->next_identifier << 16) | player->player_list_index, controller_index, player);
 	}
@@ -638,7 +583,7 @@ boolean network_game_update_player(
 	}
 
 	if (!result)
-		network_event("tried to update a player with indvalid data");
+		error(2, "tried to update a player with indvalid data");
 
 	return result;
 }
@@ -663,14 +608,6 @@ boolean network_game_remove_player(
 				game->players[player_index].machine_index == player->machine_index &&
 				game->players[player_index].controller_index == player->controller_index)
 			{
-				/* port: a client's count is the host's (its settings), and
-				need not be as many as the players it lists: none taken
-				below none */
-				if (game->player_count <= 0)
-				{
-					error(2, "tried to remove a player from a game of %d players", game->player_count);
-					break;
-				}
 				network_game_invalidate_player(&game->players[player_index]);
 				game->player_count--;
 				result = TRUE;
@@ -680,7 +617,7 @@ boolean network_game_remove_player(
 	}
 	else
 	{
-		network_event("tried to remove a player with indvalid data");
+		error(2, "tried to remove a player with indvalid data");
 	}
 
 	return result;
@@ -711,14 +648,12 @@ boolean network_game_remove_machine(
 						game->players[player_index].machine_index == machine->machine_index)
 					{
 						if (!network_game_remove_player(game, &game->players[player_index]))
-							network_event("failed to remove a machine's player");
+							error(2, "failed to remove a machine's player");
 					}
 				}
 
 				network_game_invalidate_machine(game, machine->machine_index);
-				/* (port: and none below none, as for its players) */
-				if (game->machine_count > 0)
-					game->machine_count--;
+				game->machine_count--;
 				result = TRUE;
 				break;
 			}
@@ -765,12 +700,7 @@ boolean network_game_create_game_objects(
 	game_precache_new_map(options.map_name, TRUE);
 	main_menu_unload();
 
-	/* port: and whenever a map is loaded. After a game the client is back in
-	the main menu's map with its clock ended (network_game_dispose_game_objects),
-	so not in progress: the next game's map was loaded over it, and the
-	texture cache, opened again, lost the menu's loaded textures (a crash in
-	lruv_block_new) */
-	if (game_in_progress() || game_map_loaded())
+	if (game_in_progress())
 	{
 		game_dispose_from_old_map();
 		game_unload();

@@ -653,7 +653,6 @@ struct widget_instance;
 #include "interface/player_ui.h"
 #include "interface/progress_bar.h"
 #include "interface/ui_widget_game_data_input_functions.h"
-#include "custom_edition_maps.h" /* port: port/linux/game/custom_edition_maps.c */
 #include "interface/ui_widget_event_handler_functions.h"
 #include "interface/ui_widget_text_search_and_replace_functions.h"
 #include "interface/virtual_keyboard.h"
@@ -663,7 +662,6 @@ struct widget_instance;
 #include "networking/network_connection.h"
 #include "networking/network_game_globals.h"
 #include "networking/network_server_manager.h"
-#include "network_coop.h" /* port: port/linux/game/network_coop.c */
 #include "rasterizer/rasterizer.h"
 #include "saved games/player_profile.h"
 #include "saved games/playlist_profile.h"
@@ -1367,14 +1365,6 @@ static boolean ui_widget_load_children_recursive(
 /* port: whether the tag is one of the menus' (port/linux/game/menu_tags.c) */
 boolean pc_menu_tag(
 	long tag_index);
-/* port: where in its widget, and how large, the menus draw a frame of
-ui.map's that they scale (port/linux/game/menu_tags.c) */
-boolean pc_menu_frame_placement(
-	struct bitmap_data const *bitmap,
-	short *x,
-	short *y,
-	short *width,
-	short *height);
 static void widget_instance_initialize(
 	struct widget_instance *widget,
 	struct widget_instance *parent,
@@ -1826,8 +1816,6 @@ void draw_bitmap_in_rect(
 
 		parameters.meter_parameters = NULL;
 		parameters.point_sampled = FALSE;
-		/* port: (rasterizer.h) */
-		parameters.alpha_weighted = FALSE;
 		parameters.framebuffer_blend_function = 0;
 		rasterizer_psuedo_dynamic_screen_quad_draw(&parameters, vertices);
 	}
@@ -1965,29 +1953,6 @@ void display_error_when_main_menu_loaded(
 	error(
 		_error_silent,
 		"there is already an error message queued for display at the main menu; ignoring this one");
-	return;
-}
-
-/* port: an error of the port's own text (as display_error_text_deferred's)
-shown when the main menu is next loaded, as display_error_when_main_menu_loaded
-shows one of the game's: a network game left for a reason the game has no
-error for (a map missing: cache_files.c). The text is copied, when no error
-is queued already. */
-void display_error_text_when_main_menu_loaded(
-	wchar_t const *text)
-{
-	static wchar_t queued_text[512];
-
-	if (widget_globals.main_menu_deferred_error_code != NONE)
-	{
-		error(_error_silent, "there is already an error message queued for display at the main menu; ignoring this one");
-		return;
-	}
-	ustrncpy(queued_text, text, NUMBEROF(queued_text) - 1);
-	queued_text[NUMBEROF(queued_text) - 1] = 0;
-	ui_widget_port_error_pending_text = queued_text;
-	widget_globals.main_menu_deferred_error_code = _error_cannot_create_saved_game_file_with_empty_name;
-
 	return;
 }
 
@@ -2256,17 +2221,10 @@ void ui_widget_delete(
 		if (handler->event_type == _widget_event_deleted &&
 			TEST_FLAG(handler->flags, _event_handler_run_function_bit))
 		{
-			/* port: an event of nothing, not none: a map's widget may name a
-			function for this handler that reads its event */
-			static struct event_record no_event;
 			boolean widget_deleted = FALSE;
-			boolean handled;
-
-			csmemset(&no_event, 0, sizeof(no_event));
-			no_event.controller_index = NONE;
-			handled = ui_widget_event_handler_function_invoke(
+			boolean handled = ui_widget_event_handler_function_invoke(
 				widget,
-				&no_event,
+				NULL,
 				handler->function,
 				&widget_deleted);
 
@@ -3374,11 +3332,7 @@ static void event_handler_dispatch(
 		{
 			close_all = TRUE;
 		}
-		/* port: not from a widget its function deleted (it went back:
-		menu_functions.c's profile_save_changes), which the Xbox's opened
-		from regardless */
 		if (TEST_FLAG(handler->flags, _event_handler_open_widget_bit) &&
-			!widget_deleted &&
 			handler->widget_tag.index != NONE)
 		{
 			if (!ui_widget_launch_widget(widget, handler->widget_tag.index))
@@ -3739,10 +3693,7 @@ static void widget_instance_initialize(
 	widget->visible = TRUE;
 	widget->render_regardless_of_controller_index =
 		TEST_FLAG(definition->flags, _widget_render_regardless_of_controller_index_bit);
-	/* port: a network co-op game never pauses (it opens the campaign's pause
-	screen, which would) */
-	widget->pause_game_time = TEST_FLAG(definition->flags, _widget_pause_game_time_bit) &&
-		!network_coop_active();
+	widget->pause_game_time = TEST_FLAG(definition->flags, _widget_pause_game_time_bit);
 	widget->creation_time = widget_globals.current_system_milliseconds;
 	widget->milliseconds_to_auto_close = MAX(definition->milliseconds_to_auto_close, 0);
 	widget->auto_close_fade_time = MAX(definition->auto_close_fade_time, 0);
@@ -4080,27 +4031,8 @@ void draw_string_and_hack_in_icons(
 {
 	wchar_t *current = string_data;
 	rectangle2d cursor_bounds = *bounds;
-	unsigned long length;
 
-	/* port: no more than the buffer holds (the text is the map's: a string
-	list's or a hud message's; retail strings are up to 398 characters of
-	1024). A longer one is cut, said once. */
-	for (length = 0; length < NUMBEROF(string_data) - 1 && instring[length]; length++)
-		string_data[length] = instring[length];
-	string_data[length] = 0;
-	if (instring[length])
-	{
-		static boolean long_string_reported = FALSE;
-
-		if (!long_string_reported)
-		{
-			long_string_reported = TRUE;
-			error(
-				_error_silent,
-				"string of more than %d characters cut",
-				(long)NUMBEROF(string_data) - 1);
-		}
-	}
+	wcscpy(string_data, instring);
 	while (current)
 	{
 		wchar_t *icon_spec = wcschr(current, L'%');
@@ -5136,61 +5068,6 @@ static long search_and_replace(
 	return replacements;
 }
 
-/* port: the port's own error text (display_error_text_deferred), which may be
-longer than a line of its dialog: broken at spaces (the strings' line break,
-'\r') where a line would be wider than `width` in the font drawn with.
-FALSE when a line is still wider (a word longer than a line). */
-static boolean ui_widget_port_text_wrap(
-	wchar_t *text,
-	rectangle2d const *bounds,
-	short width)
-{
-	long line_start = 0;
-	long last_space = NONE;
-	long index;
-	boolean fits = TRUE;
-
-	for (index = 0; ; index++)
-	{
-		wchar_t character = text[index];
-
-		if (character == L'\r' || character == L'\n')
-		{
-			line_start = index + 1;
-			last_space = NONE;
-			continue;
-		}
-		if (character == L' ' || character == 0)
-		{
-			wchar_t line[256];
-			long length = MIN(index - line_start, (long)NUMBEROF(line) - 1);
-			rectangle2d text_bounds;
-			rectangle2d cursor_bounds;
-
-			csmemcpy(line, text + line_start, length * sizeof(wchar_t));
-			line[length] = 0;
-			draw_unicode_string_compute_bounds(bounds, line, &text_bounds, &cursor_bounds);
-			if (cursor_bounds.x0 - bounds->x0 > width && last_space != NONE)
-			{
-				text[last_space] = L'\r';
-				line_start = last_space + 1;
-				/* (the line begun, the word just measured: wider alone?) */
-				length = MIN(index - line_start, (long)NUMBEROF(line) - 1);
-				csmemcpy(line, text + line_start, length * sizeof(wchar_t));
-				line[length] = 0;
-				draw_unicode_string_compute_bounds(bounds, line, &text_bounds, &cursor_bounds);
-			}
-			if (cursor_bounds.x0 - bounds->x0 > width)
-				fits = FALSE;
-			if (character == 0)
-				break;
-			last_space = index;
-		}
-	}
-
-	return fits;
-}
-
 static void widget_instance_render_text_box(
 	struct widget_instance *widget,
 	struct ui_widget_definition *definition,
@@ -5327,41 +5204,6 @@ static void widget_instance_render_text_box(
 				SECONDS_PER_MILLISECOND * 3.0f) + 1.5f) * 0.4f) * color.alpha;
 	}
 	draw_string_set_draw_mode(font_index, NONE, justification, 0, &color);
-	/* port: the port's own error text, wrapped to its dialog: the box its
-	background draws (narrower than the text box; its picture is padded to a
-	power of two, so a margin of the text's offset on each side and as much
-	again), and as tall as the text box less its offset above and as much
-	below (the dialog's footer). Text that would be taller, or wider (a word
-	longer than a line), is drawn in the menus' smaller font. */
-	if (widget == ui_widget_port_error_text_box && ui_widget_port_error_text)
-	{
-		struct bitmap_data *background = definition->background_bitmap.index != NONE ?
-			bitmap_group_get_bitmap_from_sequence(definition->background_bitmap.index, 0, 0) : NULL;
-		short width = (short)(definition->bounds.x1 - definition->bounds.x0);
-		short height = (short)(definition->bounds.y1 - definition->bounds.y0 - 2 * definition->vertical_offset);
-		wchar_t wrapped[512];
-		rectangle2d text_bounds;
-		rectangle2d cursor_bounds;
-
-		if (background && background->width > 0 && background->width < width)
-			width = background->width;
-		width = (short)(width - 4 * definition->horizontal_offset);
-		ustrncpy(wrapped, *text, NUMBEROF(wrapped) - 1);
-		wrapped[NUMBEROF(wrapped) - 1] = 0;
-		if (!ui_widget_port_text_wrap(wrapped, &bounds, width) ||
-			(draw_unicode_string_compute_bounds(&bounds, wrapped, &text_bounds, &cursor_bounds),
-			cursor_bounds.y1 - bounds.y0 > height))
-		{
-			long small_font_index = tag_loaded('font', "ui\\small_ui");
-
-			if (small_font_index != NONE)
-			{
-				font_index = small_font_index;
-				draw_string_set_draw_mode(font_index, NONE, justification, 0, &color);
-			}
-		}
-		ui_widget_port_text_wrap(*text, &bounds, width);
-	}
 	if (string_has_icons_to_draw(*text))
 		draw_string_and_hack_in_icons(&bounds, &clip, NULL, 0, *text, FALSE);
 	else
@@ -6002,23 +5844,6 @@ static boolean ui_mouse_selection_row(
 		(!strncmp(widget->name, "list_item_", 10) || !strncmp(widget->name, "server_item_", 12));
 }
 
-/* port: a press the menus post from their updates (menu_functions.c: the
-server browser's join, once its game is reached), posted where the mouse's
-are: one posted while the widgets update or draw would be overwritten by the
-next frame's events (queue_event keeps the latest) */
-static short ui_widget_port_press_controller = NONE;
-static short ui_widget_port_press_button;
-
-void ui_widget_port_post_button(
-	short controller_index,
-	short button_index)
-{
-	ui_widget_port_press_controller = controller_index;
-	ui_widget_port_press_button = button_index;
-
-	return;
-}
-
 static void ui_widgets_process_mouse(
 	void)
 {
@@ -6163,9 +5988,6 @@ static void widget_instance_render_recursive(
 	long input_index;
 	struct widget_instance *child;
 	struct bitmap_data *bitmap;
-	/* port: (custom_edition_maps_picture) */
-	struct bitmap_data *custom_edition_picture;
-	short frame_index;
 
 	if (!use_nifty_plasma_fx &&
 		TEST_FLAG(definition->flags, _widget_always_render_with_nifty_fx_bit))
@@ -6188,15 +6010,10 @@ static void widget_instance_render_recursive(
 	if (!widget->visible)
 		return;
 	ui_mouse_note_target(widget, definition, offset);
-	/* port: a Custom Edition map's picture, drawn over the whole widget, or
-	the unknown level's frame for a map without one
-	(port/linux/game/custom_edition_maps.c) */
-	frame_index = widget->animation.current_frame_index;
-	custom_edition_picture = custom_edition_maps_picture(definition->background_bitmap.index, &frame_index);
-	bitmap = custom_edition_picture ? custom_edition_picture : bitmap_group_get_bitmap_from_sequence(
+	bitmap = bitmap_group_get_bitmap_from_sequence(
 		definition->background_bitmap.index,
 		0,
-		frame_index);
+		widget->animation.current_frame_index);
 	if (bitmap)
 	{
 		real alpha = alpha_modifier;
@@ -6270,41 +6087,14 @@ static void widget_instance_render_recursive(
 				alpha_modifier;
 		}
 		color = modulate_pixel32_by_real_alpha(0xFFFFFFFF, alpha);
-		{
-			/* port: a frame of ui.map's that the menus scale (the Xbox's
-			picture of the button settings, in the profile settings' smaller
-			box): drawn at their size, from where they place it, in units of
-			that size rather than one to a texel. A Custom Edition map's own
-			picture is stretched over the widget; a stock campaign level's is
-			laid out as the stock pictures are */
-			rectangle2d texels = bounds;
-			short frame_x, frame_y, frame_width, frame_height;
-			boolean shown = TRUE;
-			boolean stretched = custom_edition_picture &&
-				custom_edition_maps_campaign_level(widget->animation.current_frame_index) == NONE;
-
-			if (pc_menu_frame_placement(bitmap, &frame_x, &frame_y, &frame_width, &frame_height))
-			{
-				bounds.x0 += frame_x;
-				bounds.y0 += frame_y;
-				texels.x0 = 0;
-				texels.y0 = 0;
-				texels.x1 = (short)((long)(bounds.x1 - bounds.x0) * bitmap->width / frame_width);
-				texels.y1 = (short)((long)(bounds.y1 - bounds.y0) * bitmap->height / frame_height);
-				shown = bounds.x1 > bounds.x0 && bounds.y1 > bounds.y0;
-			}
-			if (shown)
-			{
-				draw_bitmap_in_rect(
-					bitmap,
-					&bounds,
-					stretched ? NULL : &texels,
-					clip,
-					color,
-					&multitexture_params,
-					FALSE);
-			}
-		}
+		draw_bitmap_in_rect(
+			bitmap,
+			&bounds,
+			&bounds,
+			clip,
+			color,
+			&multitexture_params,
+			FALSE);
 		if (use_nifty_plasma_fx)
 		{
 			ui_plasma_effect_color.alpha = 0.0f;
@@ -6788,33 +6578,6 @@ static void widget_instance_tab_to_previous_valid_widget(
 	return;
 }
 
-/* port: whether a widget of the local player (NONE: any) takes the
-controller's events. In co-op's menus (Multiplayer's CO-OP CAMPAIGN,
-port/linux/game/menu_functions.c) the screens it shares with one player's
-campaign, New Game's levels and the difficulty, are player 1's (their rows
-the first controller's), and either player's controller uses them: player 1's
-is the one that chose co-op, player 2's the one that chose their profile */
-static boolean widget_takes_events_of_controller(
-	struct widget_instance const *widget,
-	short controller_index)
-{
-	short player;
-
-	if (widget->local_player_index == NONE || widget->local_player_index == controller_index)
-		return TRUE;
-	if (widget->local_player_index != 0 || !we_are_at_the_main_menu || player_spawn_count < 2 ||
-		controller_index < 0 || controller_index >= MAXIMUM_NUMBER_OF_LOCAL_PLAYERS)
-	{
-		return FALSE;
-	}
-	for (player = 0; player < 2; player++)
-	{
-		if (player_ui_get_single_player_local_player_controller(player) == controller_index)
-			return TRUE;
-	}
-	return FALSE;
-}
-
 static void widget_instance_process_one_event_recursive(
 	struct widget_instance *widget,
 	struct ui_widget_definition *definition,
@@ -6823,7 +6586,8 @@ static void widget_instance_process_one_event_recursive(
 {
 	boolean event_handled = FALSE;
 	boolean widget_deleted = FALSE;
-	boolean event_for_this_widget = widget_takes_events_of_controller(widget, event->controller_index);
+	boolean event_for_this_widget = widget->local_player_index == NONE ||
+		widget->local_player_index == event->controller_index;
 	long audio_feedback = _ui_audio_feedback_none;
 
 	match_assert(
@@ -7250,7 +7014,8 @@ static void widget_instance_process_one_event_recursive(
 
 			for (child = widget->child; child; child = child->next)
 			{
-				if (widget_takes_events_of_controller(child, event->controller_index))
+				if (child->local_player_index == NONE ||
+					child->local_player_index == event->controller_index)
 				{
 					widget_instance_process_one_event_recursive(
 						child,
@@ -7264,7 +7029,8 @@ static void widget_instance_process_one_event_recursive(
 		}
 		else if (widget->focused_child)
 		{
-			if (widget_takes_events_of_controller(widget->focused_child, event->controller_index))
+			if (widget->focused_child->local_player_index == NONE ||
+				widget->focused_child->local_player_index == event->controller_index)
 			{
 				widget_instance_process_one_event_recursive(
 					widget->focused_child,
@@ -7370,10 +7136,7 @@ static boolean ui_check_for_pause_game(
 						network_game_client_get_machine_index(client);
 					char const *widget_name;
 
-					/* port: a campaign map has only the campaign's pause screen */
-					if (network_coop_active())
-						widget_name = "ui\\shell\\solo_game\\pause_game\\pause_game";
-					else switch (local_player_count)
+					switch (local_player_count)
 					{
 					case 1:
 						widget_name =
@@ -7430,30 +7193,6 @@ static boolean ui_check_for_pause_game(
 				{
 					if (game_time_get_paused() == TRUE)
 						ui_widgets_close_all();
-					/* port: (and a multiplayer map's own, below, which pauses
-					nothing, closes as in a multiplayer game) */
-					else if (tag_loaded(UI_WIDGET_DEFINITION_TAG, "ui\\shell\\solo_game\\pause_game\\pause_game") == NONE)
-						ui_widget_delete(widget_globals.active_widgets[controller_index]);
-				}
-				/* port: a multiplayer map played alone (New Game's MULTIPLAYER
-				maps) has no campaign pause screen, but its own (LEAVE GAME
-				goes to the main menu: network_game_remove_local_player) */
-				else if (tag_loaded(UI_WIDGET_DEFINITION_TAG, "ui\\shell\\solo_game\\pause_game\\pause_game") == NONE &&
-					tag_loaded(UI_WIDGET_DEFINITION_TAG, "ui\\shell\\multiplayer_game\\pause_game\\1p_pause_game") != NONE)
-				{
-					if (!ui_widget_load_by_name_or_tag(
-						"ui\\shell\\multiplayer_game\\pause_game\\1p_pause_game",
-						NONE,
-						NULL,
-						controller_index,
-						NONE,
-						NONE,
-						NONE))
-					{
-						error(
-							_error_silent,
-							"failed to load multiplayer pause game window");
-					}
 				}
 				else if (!ui_widget_load_by_name_or_tag(
 					"ui\\shell\\solo_game\\pause_game\\pause_game",
@@ -7553,11 +7292,6 @@ void process_ui_widgets(
 		widget_globals.initialized);
 	widget_globals.current_system_milliseconds = system_milliseconds();
 	ui_widgets_process_mouse();
-	if (ui_widget_port_press_controller != NONE)
-	{
-		event_manager_post_button(ui_widget_port_press_controller, ui_widget_port_press_button);
-		ui_widget_port_press_controller = NONE;
-	}
 	if (widget_globals.initialization_thread)
 	{
 		if (!thread_has_exited(widget_globals.initialization_thread))

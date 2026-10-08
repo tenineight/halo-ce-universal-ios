@@ -11,9 +11,6 @@ enum
 	_allegiance_incident_forgive
 };
 
-/* port: the longs of game_allegiance_get_teams' bit vectors */
-#define GAME_ALLEGIANCE_BITVECTOR_LONGS 4
-
 /* ---------- prototypes/GAME_ALLEGIANCE.C */
 
 void game_allegiance_initialize(
@@ -26,12 +23,6 @@ void game_allegiance_dispose_from_old_map(
 	void);
 void game_allegiance_update(
 	void);
-void game_allegiance_get_teams(
-	unsigned long ally_bitvector[GAME_ALLEGIANCE_BITVECTOR_LONGS],
-	unsigned long friendly_bitvector[GAME_ALLEGIANCE_BITVECTOR_LONGS]);
-void game_allegiance_set_teams(
-	unsigned long const ally_bitvector[GAME_ALLEGIANCE_BITVECTOR_LONGS],
-	unsigned long const friendly_bitvector[GAME_ALLEGIANCE_BITVECTOR_LONGS]);
 void game_allegiance_create(
 	short team1_index,
 	boolean team1_suspicious,
